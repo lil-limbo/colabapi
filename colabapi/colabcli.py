@@ -91,6 +91,20 @@ class ColabCLI:
         return self.path() is not None
 
     # -- low-level invocation ------------------------------------------------
+    def _child_env(self) -> dict:
+        """Environment for the `colab` subprocess.
+
+        Google frequently returns OAuth scopes in a different order (or a subset)
+        than the official CLI requested. When that happens, the `oauthlib` library
+        the CLI depends on raises "Scope has changed" and aborts sign-in even
+        though authentication actually succeeded. Setting OAUTHLIB_RELAX_TOKEN_SCOPE
+        tells oauthlib to accept the returned token, so login completes. We only
+        set a default; a user who exported their own value wins.
+        """
+        env = os.environ.copy()
+        env.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+        return env
+
     def _run(self, args: Sequence[str], capture: bool = True,
              timeout: Optional[float] = None,
              input: Optional[str] = None) -> ColabResult:
@@ -103,6 +117,7 @@ class ColabCLI:
             text=True,
             timeout=timeout,
             input=input,
+            env=self._child_env(),
         )
         return ColabResult(proc.returncode,
                            proc.stdout or "" if capture else "",
@@ -116,7 +131,7 @@ class ColabCLI:
         terminal handling. Invoked via the resolved absolute path (see _run).
         """
         exe = self.require()
-        proc = subprocess.run([exe, *args])  # inherits stdin/out/err
+        proc = subprocess.run([exe, *args], env=self._child_env())  # inherits stdin/out/err
         return proc.returncode
 
     # -- high-level commands (the single place flags are mapped) --------------
