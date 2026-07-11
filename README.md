@@ -43,27 +43,24 @@ you ──> colabapi (this tool) ──> colab (Google's official CLI) ──> G
 
 ## Install
 
-### Requirements
-- Python 3.9+
-- Google's official Colab CLI (`google-colab-cli`) — installed automatically by the script below, or manually.
-
-### One-line install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lil-limbo/colabapi/main/scripts/install.sh | bash
-```
+**One command installs the whole system.** Google's official Colab CLI is pulled in automatically as a dependency — you never install it separately.
 
 ### With pipx (recommended)
 
 ```bash
 pipx install colabapi
-pipx install google-colab-cli
 ```
 
 ### With pip
 
 ```bash
-pip install --user colabapi google-colab-cli
+pip install --user colabapi
+```
+
+### One-line install script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lil-limbo/colabapi/main/scripts/install.sh | bash
 ```
 
 ### From source
@@ -73,6 +70,8 @@ git clone https://github.com/lil-limbo/colabapi.git
 cd colabapi
 pip install -e .
 ```
+
+**Requirement:** Python 3.9+. That's it — everything else installs with the package.
 
 Verify everything is wired up:
 

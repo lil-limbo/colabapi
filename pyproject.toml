@@ -43,6 +43,12 @@ classifiers = [
 dependencies = [
   "click>=8.1",
   "rich>=13.0",
+  # Google's official Colab CLI. Pulled in automatically so a single
+  # `pipx install colabapi` installs the whole system — the user never has to
+  # install this separately. colabapi locates its `colab` binary inside its own
+  # environment (see colabapi/colabcli.py), since pipx does not put dependency
+  # console scripts on PATH.
+  "google-colab-cli>=0.6.0",
 ]
 
 [project.urls]

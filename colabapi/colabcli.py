@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -27,12 +28,14 @@ from typing import Optional, Sequence
 BINARY_ENV = "COLABAPI_COLAB_BIN"
 DEFAULT_BINARY = "colab"
 
-# Documented install target for the official CLI.
+# The official CLI ships as a dependency of colabapi, so this should normally
+# never be seen. It can only appear on a broken/partial install.
 INSTALL_HINT = (
-    "The official Google Colab CLI is required.\n"
-    "Install it with:\n"
-    "  pipx install google-colab-cli    # or: pip install --user google-colab-cli\n"
-    "Docs: https://github.com/googlecolab/google-colab-cli"
+    "The official Google Colab CLI (`colab`) could not be found.\n"
+    "It ships as a dependency of colabapi, so reinstalling should fix this:\n"
+    "  pipx install --force colabapi\n"
+    "If you installed from source, run:  pip install -e .\n"
+    "You can also point colabapi at a specific binary:  export COLABAPI_COLAB_BIN=/path/to/colab"
 )
 
 
@@ -61,6 +64,21 @@ class ColabCLI:
 
     # -- discovery -----------------------------------------------------------
     def path(self) -> Optional[str]:
+        """Locate the `colab` executable.
+
+        Order matters: because google-colab-cli is a dependency of colabapi, its
+        `colab` console script lives in the *same* environment bin dir as the
+        running interpreter (this is where pipx/venv/pip --user put it) — but pipx
+        does NOT expose dependency scripts on PATH. So we look next to
+        sys.executable first, which makes `pipx install colabapi` self-contained,
+        then fall back to PATH for dev setups or an external install.
+        """
+        exe_dir = os.path.dirname(sys.executable or "")
+        if exe_dir:
+            for fname in (self.binary, self.binary + ".exe"):
+                cand = os.path.join(exe_dir, fname)
+                if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                    return cand
         return shutil.which(self.binary)
 
     def require(self) -> str:
@@ -75,9 +93,11 @@ class ColabCLI:
     # -- low-level invocation ------------------------------------------------
     def _run(self, args: Sequence[str], capture: bool = True,
              timeout: Optional[float] = None) -> ColabResult:
-        self.require()
+        # Use the resolved absolute path, not the bare name: when colabapi is
+        # installed via pipx, `colab` lives in colabapi's venv but is NOT on PATH.
+        exe = self.require()
         proc = subprocess.run(
-            [self.binary, *args],
+            [exe, *args],
             capture_output=capture,
             text=True,
             timeout=timeout,
@@ -89,12 +109,12 @@ class ColabCLI:
     def _exec_tty(self, args: Sequence[str]) -> int:
         """Hand the terminal directly to `colab` for interactive subcommands.
 
-        Using os.execvp-style passthrough (via subprocess with inherited stdio)
-        gives the user Google's real PTY/keepalive behavior for `console`/`repl`
-        without us re-implementing terminal handling.
+        Using subprocess with inherited stdio gives the user Google's real
+        PTY/keepalive behavior for `console`/`repl` without us re-implementing
+        terminal handling. Invoked via the resolved absolute path (see _run).
         """
-        self.require()
-        proc = subprocess.run([self.binary, *args])  # inherits stdin/out/err
+        exe = self.require()
+        proc = subprocess.run([exe, *args])  # inherits stdin/out/err
         return proc.returncode
 
     # -- high-level commands (the single place flags are mapped) --------------
