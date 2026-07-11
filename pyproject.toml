@@ -44,7 +44,7 @@ dependencies = [
   "click>=8.1",
   "rich>=13.0",
   # Google's official Colab CLI. Pulled in automatically so a single
-  # `pipx install colabapi` installs the whole system — the user never has to
+  # `pipx install colabapi` installs the whole system, so the user never has to
   # install this separately. colabapi locates its `colab` binary inside its own
   # environment (see colabapi/colabcli.py), since pipx does not put dependency
   # console scripts on PATH.

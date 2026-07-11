@@ -80,7 +80,7 @@ def login() -> None:
     _require_colab()
     console.print(Panel.fit(
         "colabapi will hand off to Google's official sign-in.\n\n"
-        "A browser window opens for [bold]Google's own login[/] — including any\n"
+        "A browser window opens for [bold]Google's own login[/], including any\n"
         "2FA or device checks, exactly as normal. [bold]Your password never\n"
         "touches colabapi.[/]",
         title="Sign in to Colab", border_style="cyan"))
@@ -109,7 +109,7 @@ def _print_runtimes() -> None:
     table.add_column("Notes", style="dim")
     for r in rt.RUNTIMES:
         avail = "[green]available[/]" if r.free else \
-            f"[yellow]needs {r.tier.upper()}[/] — not on a free account"
+            f"[yellow]needs {r.tier.upper()}[/] (not on a free account)"
         table.add_row(r.key, r.label, r.accelerator, avail, r.notes)
     console.print(table)
     console.print("[dim]Free-account requests for paid runtimes are refused by Colab itself.[/]")
@@ -178,7 +178,7 @@ def shell() -> None:
     """Open an interactive terminal on the runtime (`colab console`)."""
     _require_colab()
     s = _session_or_exit()
-    console.print(f"[green]Terminal into Colab[/] — {timing.session_line(s.started_at, s.max_lifetime_hours)}")
+    console.print(f"[green]Terminal into Colab[/]: {timing.session_line(s.started_at, s.max_lifetime_hours)}")
     console.print("[dim]Type 'exit' or press Ctrl-D to return here. Ctrl-C is passed to the runtime.[/]\n")
     code = colab.console()
     console.print(f"\n[dim]Terminal closed (exit {code}). The Colab runtime is still running.[/]")
@@ -300,9 +300,9 @@ def doctor() -> None:
     # Surface the live `new` interface so flag drift is visible.
     help_new = colab.help_text("new")
     for flag in ("--gpu", "--tpu"):
-        mark = "[green]present[/]" if flag in help_new else "[yellow]NOT found — flag mapping may need update[/]"
+        mark = "[green]present[/]" if flag in help_new else "[yellow]NOT found, flag mapping may need update[/]"
         console.print(f"colab new {flag}: {mark}")
-    console.print("[dim]If flags differ, edit colabapi/runtime.py (colab_flags) — that's the single source.[/]")
+    console.print("[dim]If flags differ, edit colabapi/runtime.py (colab_flags); that's the single source.[/]")
 
 
 @cli.command(context_settings={"ignore_unknown_options": True})

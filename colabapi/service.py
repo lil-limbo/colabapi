@@ -19,7 +19,7 @@ USER_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
 
 _UNIT_TEMPLATE = """\
 [Unit]
-Description=colabapi — persistent Google Colab runtime tunnel + keep-alive
+Description=colabapi: persistent Google Colab runtime tunnel + keep-alive
 Documentation=https://github.com/lil-limbo/colabapi
 After=network-online.target
 Wants=network-online.target

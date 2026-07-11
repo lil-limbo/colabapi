@@ -1,7 +1,7 @@
 name: Publish to PyPI
 
 # Publishes colabapi to PyPI whenever you create a GitHub Release (or run this
-# workflow manually). Uses PyPI Trusted Publishing (OIDC) — no API tokens or
+# workflow manually). Uses PyPI Trusted Publishing (OIDC), no API tokens or
 # passwords are stored in the repo. See docs/RELEASING.md for the one-time setup.
 
 on:

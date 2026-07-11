@@ -6,7 +6,7 @@ tier each typically requires. colabapi shows the menu and flags paid tiers; the
 browser/Google is the source of truth for what actually gets allocated (a free
 account asking for an A100 will simply be refused by Colab).
 
-`colab_flags` is the argument list handed to `colab new` — kept here so the whole
+`colab_flags` is the argument list handed to `colab new`, kept here so the whole
 accelerator mapping lives in one place. Validated against google-colab-cli as
 documented mid-2026 (GPUs: T4, L4, G4, H100, A100; TPUs: v5e1, v6e1).
 """

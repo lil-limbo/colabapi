@@ -2,11 +2,11 @@
 
 The *primary* keep-alive is Google's own: the official `colab` CLI pings Colab's
 sanctioned tunnel endpoint on an interval to hold off the idle timeout. This
-module is only a belt-and-suspenders supervisor — it runs a trivial command on
+module is only a belt-and-suspenders supervisor. It runs a trivial command on
 the runtime once a minute to confirm the session is still reachable, and records
 failures so the systemd service log surfaces a silent death of Google's daemon.
 
-It addresses the IDLE timeout only — it cannot and does not try to defeat Colab's
+It addresses the IDLE timeout only; it cannot and does not try to defeat Colab's
 absolute max-lifetime cap, and it stays gentle (one tiny command per interval) so
 it looks like normal use, not abuse.
 
@@ -22,7 +22,7 @@ from typing import Callable, Optional
 
 RunRemote = Callable[[str], str]
 
-# Minimal, cheap activity — touches a file and reads uptime.
+# Minimal, cheap activity: touches a file and reads uptime.
 _PING = "date +%s > /tmp/.colabapi_alive && uptime >/dev/null 2>&1 && echo ok"
 
 

@@ -3,7 +3,7 @@
 Colab enforces two independent limits:
   * an ABSOLUTE max lifetime (roughly 12h free, longer on paid tiers) that
     nothing can extend, and
-  * an IDLE timeout that disconnects a runtime doing nothing — this is the one
+  * an IDLE timeout that disconnects a runtime doing nothing. This is the one
     the keep-alive addresses.
 
 colabapi can only *estimate* the absolute end because Google does not publish an
@@ -49,5 +49,5 @@ def session_line(started_at: Optional[float], max_lifetime_hours: float) -> str:
     if rem is None:
         return f"up {human_duration(up)}"
     if rem <= 0:
-        return f"up {human_duration(up)} — past estimated limit (may disconnect any moment)"
+        return f"up {human_duration(up)}, past estimated limit (may disconnect any moment)"
     return f"up {human_duration(up)} · ~{human_duration(rem)} left (est.)"

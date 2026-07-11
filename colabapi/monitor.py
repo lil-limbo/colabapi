@@ -1,7 +1,7 @@
 """Live CPU / RAM / GPU monitor for a connected Colab runtime.
 
 Stats are read from *inside* the runtime by running small shell snippets over the
-same tunnel used for the shell, so the monitor reflects the Colab VM — not your
+same tunnel used for the shell, so the monitor reflects the Colab VM, not your
 local machine. Rendering is decoupled from transport: pass any callable that
 executes a command on the runtime and returns its stdout.
 """
@@ -116,7 +116,7 @@ def build_panel(run_remote: RunRemote, session_line: str = "") -> Panel:
     if not gpus:
         rows.append(Text("  No GPU on this runtime (CPU-only).", style="dim"))
 
-    title = "colabapi — runtime monitor"
+    title = "colabapi runtime monitor"
     subtitle = session_line or "Ctrl+C to exit monitor"
     return Panel(Group(*rows), title=title, subtitle=subtitle, border_style="cyan")
 

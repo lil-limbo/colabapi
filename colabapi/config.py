@@ -4,7 +4,7 @@ Everything colabapi stores lives under the user's XDG config/state directories.
 The only thing ever written to disk is non-sensitive session metadata (chosen
 runtime, tunnel host/port, timestamps) and, if the user opts in, an SSH key
 generated locally for connecting to the tunnel. No Google credentials are ever
-requested, transmitted, or stored — see README "Privacy".
+requested, transmitted, or stored. See README "Privacy".
 """
 
 from __future__ import annotations

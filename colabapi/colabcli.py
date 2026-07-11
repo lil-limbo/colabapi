@@ -4,7 +4,7 @@ colabapi is an orchestration + persistence + UX layer on top of Google's
 first-party `google-colab-cli` (https://github.com/googlecolab/google-colab-cli).
 We deliberately delegate authentication, runtime allocation, the interactive
 terminal, and the primary keep-alive to Google's own tool, which uses Google's
-sanctioned tunnel and OAuth — the ban-safe path. colabapi adds: a single
+sanctioned tunnel and OAuth (the ban-safe path). colabapi adds: a single
 `colabapi` command, a systemd service so sessions survive logout, a runtime
 picker that flags paid tiers, a live resource monitor, and session-time display.
 
@@ -68,7 +68,7 @@ class ColabCLI:
 
         Order matters: because google-colab-cli is a dependency of colabapi, its
         `colab` console script lives in the *same* environment bin dir as the
-        running interpreter (this is where pipx/venv/pip --user put it) — but pipx
+        running interpreter (this is where pipx/venv/pip --user put it), but pipx
         does NOT expose dependency scripts on PATH. So we look next to
         sys.executable first, which makes `pipx install colabapi` self-contained,
         then fall back to PATH for dev setups or an external install.

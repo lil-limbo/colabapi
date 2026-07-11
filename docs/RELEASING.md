@@ -8,7 +8,7 @@ secrets. **Manual upload** is the quickest way to get the very first release out
 
 ---
 
-## Option A — Trusted Publishing (recommended, no tokens)
+## Option A: Trusted Publishing (recommended, no tokens)
 
 ### One-time setup
 1. Create a free account at <https://pypi.org/account/register/> and verify your email.
@@ -36,7 +36,7 @@ Actions tab (**Run workflow**).
 
 ---
 
-## Option B — Manual upload (fastest first release)
+## Option B: Manual upload (fastest first release)
 
 ### One-time setup
 1. Create a PyPI account (as above).

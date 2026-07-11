@@ -3,12 +3,12 @@
 # colabapi installer
 # ------------------
 # Installs the colabapi CLI. Google's official Colab CLI comes along
-# automatically as a dependency — you only ever install one thing.
+# automatically as a dependency, so you only ever install one thing.
 # Safe to re-run. Does NOT require root; installs into the user's home by default.
 #
 #   curl -fsSL https://raw.githubusercontent.com/lil-limbo/colabapi/main/scripts/install.sh | bash
 #
-# What this does — and does NOT do:
+# What this does, and does NOT do:
 #   * Installs the Python package `colabapi` (which pulls in everything it needs).
 #   * Never asks for, stores, or transmits any Google credentials. Sign-in happens
 #     in your browser through Google's own flow.
