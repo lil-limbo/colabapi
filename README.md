@@ -57,6 +57,12 @@ pipx install colabapi
 pip install --user colabapi
 ```
 
+> **On Kali / Debian / Ubuntu** you may hit `error: externally-managed-environment` (PEP 668). This is the OS protecting its system Python, not a colabapi problem. Use `pipx` (above), a virtualenv, or override it:
+>
+> ```bash
+> pip install --user colabapi --break-system-packages
+> ```
+
 ### One line install script
 
 ```bash
@@ -70,6 +76,16 @@ git clone https://github.com/lil-limbo/colabapi.git
 cd colabapi
 pip install -e .
 ```
+
+> **On Kali / Debian / Ubuntu**, `pip install -e .` may fail with `externally-managed-environment` (PEP 668). Pick one:
+>
+> ```bash
+> # Option A: override the guard (quickest)
+> pip install -e . --break-system-packages
+>
+> # Option B: use an isolated virtualenv (cleanest)
+> python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+> ```
 
 **Requirement:** Python 3.9+. That's it. Everything else installs with the package.
 
