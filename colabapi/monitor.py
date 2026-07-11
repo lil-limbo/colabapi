@@ -1,9 +1,10 @@
 """Live CPU / RAM / GPU monitor for a connected Colab runtime.
 
-Stats are read from *inside* the runtime by running small shell snippets over the
-same tunnel used for the shell, so the monitor reflects the Colab VM, not your
-local machine. Rendering is decoupled from transport: pass any callable that
-executes a command on the runtime and returns its stdout.
+Stats are read from *inside* the runtime by executing a small Python snippet over
+the same tunnel used for the shell (via `colab exec`, which runs Python), so the
+monitor reflects the Colab VM, not your local machine. Rendering is decoupled
+from transport: pass any callable that runs Python on the runtime and returns its
+stdout.
 """
 
 from __future__ import annotations
@@ -20,35 +21,44 @@ from rich.text import Text
 
 RunRemote = Callable[[str], str]
 
-# One-shot snippet: emit CPU%, mem used/total (MiB) as parseable lines.
-_CPU_MEM_SNIPPET = (
-    "python3 - <<'PY'\n"
-    "import time\n"
-    "try:\n"
-    "    import psutil\n"
-    "    c = psutil.cpu_percent(interval=0.4)\n"
-    "    m = psutil.virtual_memory()\n"
-    "    print(f'CPU {c:.1f}')\n"
-    "    print(f'MEM {m.used//1048576} {m.total//1048576}')\n"
-    "except Exception:\n"
-    "    # Fallback without psutil.\n"
-    "    with open('/proc/meminfo') as f:\n"
-    "        d = {}\n"
-    "        for line in f:\n"
-    "            k, v = line.split(':')[0], line.split()[1]\n"
-    "            d[k] = int(v)\n"
-    "    total = d['MemTotal']//1024\n"
-    "    avail = d.get('MemAvailable', d['MemFree'])//1024\n"
-    "    print('CPU 0.0')\n"
-    "    print(f'MEM {total-avail} {total}')\n"
-    "PY"
-)
-
-# GPU via nvidia-smi; empty output means no GPU on this runtime.
-_GPU_SNIPPET = (
-    "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu "
-    "--format=csv,noheader,nounits 2>/dev/null || true"
-)
+# One Python program (run on the VM via `colab exec`) that emits CPU%, memory
+# (MiB), and one "GPU <csv>" line per GPU. CPU/RAM come from psutil (with a
+# /proc/meminfo fallback); GPU comes from nvidia-smi via subprocess. No GPU lines
+# simply means a CPU-only runtime.
+_STATS_SNIPPET = r'''
+import subprocess
+try:
+    import psutil
+    c = psutil.cpu_percent(interval=0.3)
+    m = psutil.virtual_memory()
+    print("CPU %.1f" % c)
+    print("MEM %d %d" % (m.used // 1048576, m.total // 1048576))
+except Exception:
+    try:
+        d = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                p = line.split()
+                d[p[0].rstrip(":")] = int(p[1])
+        total = d["MemTotal"] // 1024
+        avail = d.get("MemAvailable", d.get("MemFree", 0)) // 1024
+        print("CPU 0.0")
+        print("MEM %d %d" % (total - avail, total))
+    except Exception:
+        print("CPU 0.0")
+        print("MEM 0 0")
+try:
+    out = subprocess.run(
+        ["nvidia-smi",
+         "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+         "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, timeout=5).stdout
+    for line in out.strip().splitlines():
+        if line.strip():
+            print("GPU " + line)
+except Exception:
+    pass
+'''
 
 
 def _bar(used: float, total: float, label: str, suffix: str) -> Table:
@@ -78,8 +88,10 @@ def _parse_cpu_mem(out: str) -> tuple[float, float, float]:
 
 def _parse_gpu(out: str) -> list[dict]:
     gpus = []
-    for line in out.strip().splitlines():
-        cells = [c.strip() for c in line.split(",")]
+    for line in out.splitlines():
+        if not line.startswith("GPU "):
+            continue
+        cells = [c.strip() for c in line[4:].split(",")]
         if len(cells) >= 5:
             gpus.append(
                 {
@@ -94,8 +106,9 @@ def _parse_gpu(out: str) -> list[dict]:
 
 
 def build_panel(run_remote: RunRemote, session_line: str = "") -> Panel:
-    cpu, mem_used, mem_total = _parse_cpu_mem(run_remote(_CPU_MEM_SNIPPET))
-    gpus = _parse_gpu(run_remote(_GPU_SNIPPET))
+    out = run_remote(_STATS_SNIPPET)
+    cpu, mem_used, mem_total = _parse_cpu_mem(out)
+    gpus = _parse_gpu(out)
 
     rows = [
         _bar(cpu, 100, "CPU", f"{cpu:.0f}%"),

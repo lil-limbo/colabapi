@@ -40,27 +40,27 @@ RUNTIMES: list[RuntimeType] = [
     RuntimeType(
         key="t4", label="T4 GPU", accelerator="NVIDIA T4 (16 GB)", tier="free",
         notes="Baseline free GPU. Rate-limited; availability varies.",
-        colab_flags=("--gpu", "t4"),
+        colab_flags=("--gpu", "T4"),
     ),
     RuntimeType(
         key="l4", label="L4 GPU", accelerator="NVIDIA L4 (24 GB)", tier="pro",
         notes="Usually Pro/Pay-As-You-Go; occasionally free.",
-        colab_flags=("--gpu", "l4"),
+        colab_flags=("--gpu", "L4"),
     ),
     RuntimeType(
         key="g4", label="G4 GPU", accelerator="RTX PRO 6000 Blackwell (~96 GB)", tier="pro+",
         notes="High-VRAM Blackwell option; Pro+/PAYG.",
-        colab_flags=("--gpu", "g4"),
+        colab_flags=("--gpu", "G4"),
     ),
     RuntimeType(
         key="a100", label="A100 GPU", accelerator="NVIDIA A100 (40 GB)", tier="pro+",
         notes="Pro+/PAYG; limited availability; high compute-unit burn.",
-        colab_flags=("--gpu", "a100"),
+        colab_flags=("--gpu", "A100"),
     ),
     RuntimeType(
         key="h100", label="H100 GPU", accelerator="NVIDIA H100 (80 GB)", tier="pro+",
         notes="Newest, highest compute-unit burn rate; Pro+/PAYG.",
-        colab_flags=("--gpu", "h100"),
+        colab_flags=("--gpu", "H100"),
     ),
     RuntimeType(
         key="tpu-v5e", label="TPU v5e", accelerator="Cloud TPU v5e-1", tier="paid",

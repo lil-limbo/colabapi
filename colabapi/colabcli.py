@@ -92,7 +92,8 @@ class ColabCLI:
 
     # -- low-level invocation ------------------------------------------------
     def _run(self, args: Sequence[str], capture: bool = True,
-             timeout: Optional[float] = None) -> ColabResult:
+             timeout: Optional[float] = None,
+             input: Optional[str] = None) -> ColabResult:
         # Use the resolved absolute path, not the bare name: when colabapi is
         # installed via pipx, `colab` lives in colabapi's venv but is NOT on PATH.
         exe = self.require()
@@ -101,6 +102,7 @@ class ColabCLI:
             capture_output=capture,
             text=True,
             timeout=timeout,
+            input=input,
         )
         return ColabResult(proc.returncode,
                            proc.stdout or "" if capture else "",
@@ -119,8 +121,11 @@ class ColabCLI:
 
     # -- high-level commands (the single place flags are mapped) --------------
     def version(self) -> str:
+        # The official CLI exposes version as a subcommand (`colab version`),
+        # not a `--version` flag, and prints e.g. "Version: 0.6.0".
         try:
-            return self._run(["--version"], timeout=15).text.strip()
+            out = self._run(["version"], timeout=15).text.strip()
+            return out.split(":", 1)[1].strip() if ":" in out else out
         except Exception:
             return "unknown"
 
@@ -131,22 +136,27 @@ class ColabCLI:
         except Exception as exc:  # noqa: BLE001
             return f"(could not read help: {exc})"
 
-    def auth(self) -> int:
-        """Browser OAuth via Google's own flow. Never handles a password."""
-        return self._exec_tty(["auth"])
+    def login(self) -> int:
+        """Trigger Google's browser OAuth.
 
-    def is_authenticated(self) -> bool:
-        # `colab status`/`colab auth --status` shape varies; treat a clean
-        # status exit as authenticated, and let real commands surface auth errors.
-        res = self._run(["status"], timeout=20)
-        if res.ok:
-            return True
-        low = (res.text or "").lower()
-        return not ("not signed in" in low or "unauthenticated" in low or "login" in low)
+        The official CLI has no standalone `auth` command; OAuth happens on the
+        first call that reaches Colab's backend. We use `colab sessions` (list
+        sessions, which needs credentials) as a lightweight trigger that does NOT
+        allocate a VM, run with an inherited TTY so Google's interactive login /
+        2FA / device checks work normally. If sign-in is still needed, it also
+        completes automatically on the first `colab new` (see new_runtime).
+        """
+        return self._exec_tty(["sessions"])
 
-    def new_runtime(self, colab_flags: Sequence[str]) -> ColabResult:
-        """Allocate a runtime. `colab_flags` is the accelerator mapping from runtime.py."""
-        return self._run(["new", *colab_flags], timeout=180)
+    def new_runtime(self, colab_flags: Sequence[str]) -> int:
+        """Allocate a runtime via `colab new`, interactively.
+
+        Run with an inherited TTY (not captured) so that if this is the first
+        authenticated call, Google's browser OAuth flow runs correctly, and the
+        user sees colab's own progress output. Returns the exit code.
+        `colab_flags` is the accelerator mapping from runtime.py.
+        """
+        return self._exec_tty(["new", *colab_flags])
 
     def status(self) -> ColabResult:
         return self._run(["status"], timeout=30)
@@ -158,13 +168,15 @@ class ColabCLI:
     def repl(self) -> int:
         return self._exec_tty(["repl"])
 
-    def exec(self, command: str, timeout: float = 40) -> ColabResult:
-        """Run a shell command on the runtime and capture output.
+    def exec_code(self, code: str, timeout: float = 40) -> ColabResult:
+        """Run Python code on the runtime and capture its stdout.
 
-        `colab exec` is used for non-interactive snippets (the resource monitor,
-        keep-alive touch). The `--` separator guards against flag parsing.
+        `colab exec` executes Python read from stdin (the documented form is
+        `echo '<py>' | colab exec`); it is NOT a shell. The resource monitor and
+        keep-alive send small Python snippets through here. With a single active
+        session the CLI infers it, so no `--session` is needed.
         """
-        return self._run(["exec", "--", "bash", "-lc", command], timeout=timeout)
+        return self._run(["exec"], timeout=timeout, input=code)
 
     def raw(self, args: Sequence[str]) -> int:
         """Passthrough escape hatch: `colabapi raw -- <args>` -> `colab <args>`."""

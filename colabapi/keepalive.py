@@ -22,8 +22,9 @@ from typing import Callable, Optional
 
 RunRemote = Callable[[str], str]
 
-# Minimal, cheap activity: touches a file and reads uptime.
-_PING = "date +%s > /tmp/.colabapi_alive && uptime >/dev/null 2>&1 && echo ok"
+# Minimal, cheap Python run on the VM (via `colab exec`) to confirm the kernel is
+# still reachable. `colab exec` executes Python, not shell, so this is Python.
+_PING = "import time; open('/tmp/.colabapi_alive','w').write(str(time.time())); print('ok')"
 
 
 class KeepAlive:

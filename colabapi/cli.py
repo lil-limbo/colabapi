@@ -44,8 +44,8 @@ def _session_or_exit() -> Session:
     return s
 
 
-def _run_remote(cmd: str) -> str:
-    res = colab.exec(cmd)
+def _run_remote(code: str) -> str:
+    res = colab.exec_code(code)
     return res.stdout if res.stdout.strip() else res.stderr
 
 
@@ -79,12 +79,13 @@ def login() -> None:
     """Sign in to Colab through Google's browser flow (no password asked)."""
     _require_colab()
     console.print(Panel.fit(
-        "colabapi will hand off to Google's official sign-in.\n\n"
-        "A browser window opens for [bold]Google's own login[/], including any\n"
-        "2FA or device checks, exactly as normal. [bold]Your password never\n"
-        "touches colabapi.[/]",
+        "colabapi hands off to Google's official sign-in.\n\n"
+        "If this is your first sign-in, a browser window opens for [bold]Google's\n"
+        "own login[/] (including any 2FA or device checks). [bold]Your password\n"
+        "never touches colabapi.[/] If you're already signed in, this just lists\n"
+        "your sessions.",
         title="Sign in to Colab", border_style="cyan"))
-    code = colab.auth()
+    code = colab.login()
     if code == 0:
         console.print("[green]Signed in.[/] Next: [bold]colabapi run[/]")
     else:
@@ -126,12 +127,6 @@ def run(runtime_key: str | None, yes: bool) -> None:
     _require_colab()
     cfg = Config.load()
 
-    if not colab.is_authenticated():
-        console.print("[yellow]Not signed in.[/] Running sign-in first…")
-        if colab.auth() != 0:
-            console.print("[red]Sign-in failed.[/]")
-            raise SystemExit(1)
-
     _print_runtimes()
     if not runtime_key:
         runtime_key = Prompt.ask("Runtime", default=cfg.default_runtime,
@@ -150,13 +145,11 @@ def run(runtime_key: str | None, yes: bool) -> None:
             raise SystemExit(0)
 
     console.print(f"Requesting [cyan]{chosen.label}[/] via [bold]colab new {' '.join(chosen.colab_flags)}[/]…")
-    res = colab.new_runtime(chosen.colab_flags)
-    if res.stdout.strip():
-        console.print(res.stdout.strip())
-    if not res.ok:
-        console.print(f"[red]colab new failed (exit {res.returncode}).[/]")
-        if res.stderr.strip():
-            console.print(f"[dim]{res.stderr.strip()}[/]")
+    console.print("[dim]If you're not signed in yet, a browser opens for Google's login first.[/]\n")
+    code = colab.new_runtime(chosen.colab_flags)
+    if code != 0:
+        console.print(f"\n[red]colab new failed (exit {code}).[/] "
+                      "Run [bold]colabapi login[/] then retry, or [bold]colabapi doctor[/].")
         raise SystemExit(1)
 
     s = Session(runtime=chosen.key, started_at=time.time(),
