@@ -101,14 +101,16 @@ colabapi doctor
 # 1. Sign in (opens Google's own login in your browser, no password asked)
 colabapi login
 
-# 2. Pick and allocate a runtime
-colabapi run                # interactive picker
+# 2. Pick a runtime, then name the session when asked
+colabapi run                # interactive picker + name prompt
 colabapi run --runtime t4   # or go straight to a T4 GPU
 
-# 3. Use it
-colabapi shell      # interactive terminal on the runtime
+# 3. Use it (omit the name to pick from an arrow-key list)
+colabapi shell      # terminal on the session, live monitor on top
 colabapi monitor    # live CPU / GPU / RAM
-colabapi status     # uptime + estimated time remaining
+colabapi sessions   # list your sessions
+colabapi status     # reachability + estimated time remaining
+colabapi stop       # stop a session (or: colabapi stop <name>)
 
 # 4. Keep it alive after you log out of your server
 colabapi service install
@@ -123,13 +125,14 @@ Press **Ctrl+C** to leave the monitor; type **`exit`** or press **Ctrl+D** to le
 |---|---|
 | `colabapi login` | Sign in via Google's browser flow (no password handled). |
 | `colabapi runtimes` | List runtime types and which need a paid plan. |
-| `colabapi run [--runtime KEY]` | Allocate a runtime (delegates to `colab new`). |
-| `colabapi shell` | Interactive terminal on the runtime (`colab console`). |
-| `colabapi repl` | Interactive Python REPL on the runtime (`colab repl`). |
-| `colabapi monitor` | Live CPU / GPU / RAM monitor. |
-| `colabapi status` | Session info, reachability, estimated time left. |
-| `colabapi stop` | Stop the Colab runtime (`colab stop`) and clear the local session. |
-| `colabapi daemon` | Supervisory keepalive (used by the service). |
+| `colabapi run [--runtime KEY]` | Allocate a runtime and name the session (delegates to `colab new -s NAME`). |
+| `colabapi sessions` | List the sessions colabapi manages. |
+| `colabapi shell [NAME]` | Terminal on a session with a live monitor on top; arrow-key picker if NAME omitted. |
+| `colabapi repl [NAME]` | Interactive Python REPL on a session (`colab repl`). |
+| `colabapi monitor [NAME]` | Live CPU / GPU / RAM monitor for a session. |
+| `colabapi status [NAME]` | Session reachability and estimated time left. |
+| `colabapi stop [NAME]` | Stop a session (`colab stop`); arrow-key picker if NAME omitted. |
+| `colabapi daemon [NAME]` | Supervisory keepalive (used by the service). |
 | `colabapi service install\|uninstall\|status` | Manage the systemd user service. |
 | `colabapi doctor` | Check your environment and the `colab` CLI interface. |
 | `colabapi raw -- <args>` | Passthrough to the official `colab` CLI. |

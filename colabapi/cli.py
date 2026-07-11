@@ -18,9 +18,9 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from . import __version__, monitor as monitor_mod, runtime as rt, service, timing
+from . import __version__, monitor as monitor_mod, runtime as rt, service, shellview, timing, ui
 from .colabcli import ColabCLI, ColabCliNotFound, INSTALL_HINT
-from .config import Config, Session, ensure_dirs
+from .config import Config, Session, SessionStore, ensure_dirs
 from .keepalive import KeepAlive
 
 console = Console()
@@ -36,20 +36,43 @@ def _require_colab() -> None:
         raise SystemExit(1)
 
 
-def _session_or_exit() -> Session:
-    s = Session.load()
-    if not s or not s.is_active:
+def _session_label(s: Session) -> str:
+    line = timing.session_line(s.started_at, s.max_lifetime_hours) if s.started_at else ""
+    return f"{s.name}  [{s.runtime}]  {line}".rstrip()
+
+
+def _pick_session(action: str, name: str | None = None) -> Session:
+    """Resolve which session to act on: by explicit name, the only one, or a picker."""
+    store = SessionStore.load()
+    active = store.active()
+    if not active:
         console.print("[red]No active runtime.[/] Start one with [bold]colabapi run[/].")
         raise SystemExit(1)
-    # Target the exact session colabapi created, so commands work even if the
-    # account has other sessions running.
-    colab.session = s.name
+    if name:
+        s = store.get(name)
+        if not s:
+            console.print(f"[red]No session named '{name}'.[/] "
+                          f"Known: {', '.join(x.name for x in active) or '(none)'}")
+            raise SystemExit(1)
+    elif len(active) == 1:
+        s = active[0]
+    else:
+        s = ui.select(active, title=f"Select a session to {action}:", to_label=_session_label)
+        if s is None:
+            console.print("[dim]Cancelled.[/]")
+            raise SystemExit(0)
+    colab.session = s.name  # target this exact session for all follow-up calls
     return s
 
 
-def _new_session_name() -> str:
+def _default_session_name() -> str:
     import uuid
-    return "colabapi-" + uuid.uuid4().hex[:6]
+    return "colab-" + uuid.uuid4().hex[:4]
+
+
+def _sanitize_name(raw: str) -> str:
+    keep = "".join(c if (c.isalnum() or c in "-_") else "-" for c in raw.strip())
+    return keep.strip("-_") or _default_session_name()
 
 
 def _run_remote(code: str) -> str:
@@ -152,7 +175,19 @@ def run(runtime_key: str | None, yes: bool) -> None:
         if not Confirm.ask("Continue anyway?", default=False):
             raise SystemExit(0)
 
-    name = _new_session_name()
+    # Ask the user to name this session; used as `colab new -s <name>` and for
+    # every later command (shell / stop / monitor).
+    store = SessionStore.load()
+    suggested = _default_session_name()
+    while True:
+        raw = Prompt.ask("Name this session", default=suggested)
+        name = _sanitize_name(raw)
+        if store.get(name):
+            console.print(f"[yellow]You already have a session named '{name}'.[/] Pick another.")
+            suggested = _default_session_name()
+            continue
+        break
+
     flags = " ".join(chosen.colab_flags)
     console.print(f"Requesting [cyan]{chosen.label}[/] via [bold]colab new -s {name} {flags}[/]…")
     console.print("[dim]If you're not signed in yet, a browser opens for Google's login first.[/]\n")
@@ -164,12 +199,12 @@ def run(runtime_key: str | None, yes: bool) -> None:
 
     s = Session(runtime=chosen.key, started_at=time.time(),
                 max_lifetime_hours=_max_lifetime_for(chosen.key), name=name)
-    s.save()
+    store.add(s)
     cfg.default_runtime = chosen.key
     cfg.save()
 
-    console.print(f"[green]Runtime ready.[/] {timing.session_line(s.started_at, s.max_lifetime_hours)}")
-    console.print("\nNow: [bold]colabapi shell[/] · [bold]colabapi monitor[/] · [bold]colabapi status[/]")
+    console.print(f"[green]Runtime '{name}' ready.[/] {timing.session_line(s.started_at, s.max_lifetime_hours)}")
+    console.print(f"\nNow: [bold]colabapi shell[/] · [bold]colabapi monitor[/] · [bold]colabapi stop {name}[/]")
     console.print("[dim]Tip: `colabapi service install` keeps it alive after you log out of this box.[/]")
 
 
@@ -177,21 +212,23 @@ def run(runtime_key: str | None, yes: bool) -> None:
 # shell / repl
 # --------------------------------------------------------------------------- #
 @cli.command()
-def shell() -> None:
-    """Open an interactive terminal on the runtime (`colab console`)."""
+@click.argument("name", required=False)
+def shell(name: str | None) -> None:
+    """Open a terminal on a session, with a live monitor on top.
+
+    With no NAME and several sessions active, an arrow-key picker appears.
+    """
     _require_colab()
-    s = _session_or_exit()
-    console.print(f"[green]Terminal into Colab[/]: {timing.session_line(s.started_at, s.max_lifetime_hours)}")
-    console.print("[dim]Type 'exit' or press Ctrl-D to return here. Ctrl-C is passed to the runtime.[/]\n")
-    code = colab.console()
-    console.print(f"\n[dim]Terminal closed (exit {code}). The Colab runtime is still running.[/]")
+    s = _pick_session("open a shell on", name)
+    shellview.open_shell(colab, s.name)
 
 
 @cli.command()
-def repl() -> None:
-    """Open an interactive Python REPL on the runtime (`colab repl`)."""
+@click.argument("name", required=False)
+def repl(name: str | None) -> None:
+    """Open an interactive Python REPL on a session (`colab repl`)."""
     _require_colab()
-    _session_or_exit()
+    _pick_session("open a REPL on", name)
     colab.repl()
 
 
@@ -199,36 +236,68 @@ def repl() -> None:
 # monitor
 # --------------------------------------------------------------------------- #
 @cli.command()
-def monitor() -> None:
-    """Live CPU / RAM / GPU monitor for the runtime (Ctrl-C to exit)."""
+@click.argument("name", required=False)
+def monitor(name: str | None) -> None:
+    """Live CPU / RAM / GPU monitor for a session (Ctrl-C to exit)."""
     _require_colab()
-    s = _session_or_exit()
+    s = _pick_session("monitor", name)
 
     def line() -> str:
-        return timing.session_line(s.started_at, s.max_lifetime_hours)
+        return f"{s.name} · {timing.session_line(s.started_at, s.max_lifetime_hours)}"
 
     monitor_mod.live_monitor(_run_remote, line, interval=Config.load().monitor_interval)
     console.print("[dim]Monitor closed.[/]")
+
+
+# Hidden: the monitor process that runs inside the top tmux pane of `shell`.
+@cli.command(name="_panemonitor", hidden=True)
+@click.argument("name")
+def _panemonitor(name: str) -> None:
+    """Internal: live monitor for a single named session (used by `shell`)."""
+    colab.session = name
+    s = SessionStore.load().get(name)
+
+    def line() -> str:
+        if s and s.started_at:
+            return f"{name} · {timing.session_line(s.started_at, s.max_lifetime_hours)}"
+        return name
+
+    monitor_mod.live_monitor(_run_remote, line, interval=max(Config.load().monitor_interval, 2.0))
 
 
 # --------------------------------------------------------------------------- #
 # status
 # --------------------------------------------------------------------------- #
 @cli.command()
-def status() -> None:
-    """Show the current session, reachability, and estimated time remaining."""
-    s = Session.load()
-    if not s or not s.is_active:
-        console.print("No active runtime. Run [bold]colabapi run[/] to start.")
+def sessions() -> None:
+    """List the sessions colabapi manages."""
+    active = SessionStore.load().active()
+    if not active:
+        console.print("No active sessions. Start one with [bold]colabapi run[/].")
         return
+    table = Table(title="colabapi sessions", header_style="bold cyan")
+    table.add_column("Name")
+    table.add_column("Runtime")
+    table.add_column("Uptime / est. remaining")
+    for s in active:
+        table.add_row(s.name, s.runtime, timing.session_line(s.started_at, s.max_lifetime_hours))
+    console.print(table)
+
+
+@cli.command()
+@click.argument("name", required=False)
+def status(name: str | None) -> None:
+    """Show a session's reachability and estimated time remaining.
+
+    With no NAME and several sessions active, an arrow-key picker appears.
+    """
+    s = _pick_session("check", name)
     table = Table(show_header=False, box=None)
-    table.add_row("Runtime", f"[cyan]{s.runtime}[/]")
-    if s.name:
-        table.add_row("Session", f"[dim]{s.name}[/]")
+    table.add_row("Session", f"[cyan]{s.name}[/]")
+    table.add_row("Runtime", s.runtime)
     table.add_row("Uptime / est.", timing.session_line(s.started_at, s.max_lifetime_hours))
     if colab.available():
-        colab.session = s.name
-        res = colab.status()
+        res = colab.status()  # colab.session already set by _pick_session
         reach = "[green]reachable[/]" if res.ok else "[red]unreachable (session may have ended)[/]"
         table.add_row("colab status", reach)
         if res.text.strip():
@@ -242,34 +311,37 @@ def status() -> None:
 # stop
 # --------------------------------------------------------------------------- #
 @cli.command()
+@click.argument("name", required=False)
 @click.option("--keep-remote", is_flag=True,
-              help="Only forget the local session; leave the Colab runtime running.")
-def stop(keep_remote: bool) -> None:
-    """Stop the Colab runtime (`colab stop`) and clear the local session."""
-    s = Session.load()
-    if not s:
-        console.print("Nothing to stop.")
-        return
-    if not keep_remote and s.name and colab.available():
-        colab.session = s.name
+              help="Only forget the session locally; leave the Colab runtime running.")
+def stop(name: str | None, keep_remote: bool) -> None:
+    """Stop a session (`colab stop`) and remove it from colabapi.
+
+    Give a NAME (e.g. `colabapi stop my-run`), or run `colabapi stop` with no name
+    to pick from an arrow-key list of active sessions.
+    """
+    s = _pick_session("stop", name)
+    store = SessionStore.load()
+    if not keep_remote and colab.available():
         console.print(f"Stopping [cyan]{s.name}[/] via [bold]colab stop[/]…")
-        res = colab.stop_session()
+        res = colab.stop_session()  # colab.session already set by _pick_session
         if res.ok:
             console.print("[green]Runtime stopped and released.[/]")
         else:
             first = res.text.strip().splitlines()[0] if res.text.strip() else ""
             console.print(f"[yellow]colab stop exited {res.returncode}.[/] {first}")
             console.print("[dim]You can also stop it in the Colab UI (Runtime → Disconnect and delete runtime).[/]")
-    Session.clear()
-    console.print("[green]Local session cleared.[/]")
+    store.remove(s.name)
+    console.print(f"[green]Removed '{s.name}' from colabapi.[/]")
 
 
 # --------------------------------------------------------------------------- #
 # daemon (systemd)
 # --------------------------------------------------------------------------- #
 @cli.command()
+@click.argument("name", required=False)
 @click.option("--foreground", is_flag=True, help="Run in the foreground (used by systemd).")
-def daemon(foreground: bool) -> None:
+def daemon(name: str | None, foreground: bool) -> None:
     """Supervisory keep-alive: verify the runtime stays reachable, with backoff.
 
     Google's official CLI runs the primary keep-alive against Colab's own tunnel
@@ -277,8 +349,8 @@ def daemon(foreground: bool) -> None:
     the service log) if that stops working, and it never hammers reconnects.
     """
     _require_colab()
-    s = _session_or_exit()
-    console.print("[cyan]colabapi keep-alive supervisor starting[/]")
+    s = _pick_session("supervise", name)
+    console.print(f"[cyan]colabapi keep-alive supervisor starting for '{s.name}'[/]")
 
     ka = KeepAlive(_run_remote, interval=Config.load().keepalive_interval,
                    on_error=lambda e: console.print(f"[dim]keep-alive check failed: {e}[/]"))

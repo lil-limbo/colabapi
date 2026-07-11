@@ -27,7 +27,8 @@ STATE_DIR = _xdg("XDG_STATE_HOME", HOME / ".local" / "state") / "colabapi"
 DATA_DIR = _xdg("XDG_DATA_HOME", HOME / ".local" / "share") / "colabapi"
 
 CONFIG_FILE = CONFIG_DIR / "config.json"
-SESSION_FILE = STATE_DIR / "session.json"
+SESSION_FILE = STATE_DIR / "session.json"  # legacy single-session file (migrated)
+SESSIONS_FILE = STATE_DIR / "sessions.json"  # current multi-session registry
 
 
 def ensure_dirs() -> None:
@@ -95,3 +96,53 @@ class Session:
     @property
     def is_active(self) -> bool:
         return self.started_at is not None
+
+
+@dataclass
+class SessionStore:
+    """Registry of every named session colabapi currently manages.
+
+    colabapi can own several `colab` sessions at once (each created via
+    `colabapi run` with its own name). This is the single source of truth for the
+    session pickers used by shell / stop / monitor.
+    """
+
+    sessions: list[Session] = field(default_factory=list)
+
+    @classmethod
+    def load(cls) -> "SessionStore":
+        if SESSIONS_FILE.exists():
+            data = json.loads(SESSIONS_FILE.read_text())
+            items = []
+            for d in data.get("sessions", []):
+                known = {k: v for k, v in d.items() if k in Session.__dataclass_fields__}
+                items.append(Session(**known))
+            return cls(items)
+        # One-time migration from the legacy single-session file.
+        legacy = Session.load()
+        store = cls([legacy] if (legacy and legacy.is_active) else [])
+        if legacy:
+            store.save()
+            Session.clear()
+        return store
+
+    def save(self) -> None:
+        ensure_dirs()
+        SESSIONS_FILE.write_text(
+            json.dumps({"sessions": [asdict(s) for s in self.sessions]}, indent=2)
+        )
+
+    def add(self, session: Session) -> None:
+        self.sessions = [s for s in self.sessions if s.name != session.name]
+        self.sessions.append(session)
+        self.save()
+
+    def remove(self, name: str) -> None:
+        self.sessions = [s for s in self.sessions if s.name != name]
+        self.save()
+
+    def get(self, name: str) -> Optional[Session]:
+        return next((s for s in self.sessions if s.name == name), None)
+
+    def active(self) -> list[Session]:
+        return [s for s in self.sessions if s.is_active and s.name]
