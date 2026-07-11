@@ -41,7 +41,15 @@ def _session_or_exit() -> Session:
     if not s or not s.is_active:
         console.print("[red]No active runtime.[/] Start one with [bold]colabapi run[/].")
         raise SystemExit(1)
+    # Target the exact session colabapi created, so commands work even if the
+    # account has other sessions running.
+    colab.session = s.name
     return s
+
+
+def _new_session_name() -> str:
+    import uuid
+    return "colabapi-" + uuid.uuid4().hex[:6]
 
 
 def _run_remote(code: str) -> str:
@@ -144,16 +152,18 @@ def run(runtime_key: str | None, yes: bool) -> None:
         if not Confirm.ask("Continue anyway?", default=False):
             raise SystemExit(0)
 
-    console.print(f"Requesting [cyan]{chosen.label}[/] via [bold]colab new {' '.join(chosen.colab_flags)}[/]…")
+    name = _new_session_name()
+    flags = " ".join(chosen.colab_flags)
+    console.print(f"Requesting [cyan]{chosen.label}[/] via [bold]colab new -s {name} {flags}[/]…")
     console.print("[dim]If you're not signed in yet, a browser opens for Google's login first.[/]\n")
-    code = colab.new_runtime(chosen.colab_flags)
+    code = colab.new_runtime(chosen.colab_flags, name=name)
     if code != 0:
         console.print(f"\n[red]colab new failed (exit {code}).[/] "
                       "Run [bold]colabapi login[/] then retry, or [bold]colabapi doctor[/].")
         raise SystemExit(1)
 
     s = Session(runtime=chosen.key, started_at=time.time(),
-                max_lifetime_hours=_max_lifetime_for(chosen.key))
+                max_lifetime_hours=_max_lifetime_for(chosen.key), name=name)
     s.save()
     cfg.default_runtime = chosen.key
     cfg.save()
@@ -213,8 +223,11 @@ def status() -> None:
         return
     table = Table(show_header=False, box=None)
     table.add_row("Runtime", f"[cyan]{s.runtime}[/]")
+    if s.name:
+        table.add_row("Session", f"[dim]{s.name}[/]")
     table.add_row("Uptime / est.", timing.session_line(s.started_at, s.max_lifetime_hours))
     if colab.available():
+        colab.session = s.name
         res = colab.status()
         reach = "[green]reachable[/]" if res.ok else "[red]unreachable (session may have ended)[/]"
         table.add_row("colab status", reach)
@@ -229,15 +242,26 @@ def status() -> None:
 # stop
 # --------------------------------------------------------------------------- #
 @cli.command()
-def stop() -> None:
-    """Forget the local session. (The Colab runtime ends on its own timers or via the Colab UI.)"""
-    if not Session.load():
+@click.option("--keep-remote", is_flag=True,
+              help="Only forget the local session; leave the Colab runtime running.")
+def stop(keep_remote: bool) -> None:
+    """Stop the Colab runtime (`colab stop`) and clear the local session."""
+    s = Session.load()
+    if not s:
         console.print("Nothing to stop.")
         return
+    if not keep_remote and s.name and colab.available():
+        colab.session = s.name
+        console.print(f"Stopping [cyan]{s.name}[/] via [bold]colab stop[/]…")
+        res = colab.stop_session()
+        if res.ok:
+            console.print("[green]Runtime stopped and released.[/]")
+        else:
+            first = res.text.strip().splitlines()[0] if res.text.strip() else ""
+            console.print(f"[yellow]colab stop exited {res.returncode}.[/] {first}")
+            console.print("[dim]You can also stop it in the Colab UI (Runtime → Disconnect and delete runtime).[/]")
     Session.clear()
     console.print("[green]Local session cleared.[/]")
-    console.print("[dim]To actually terminate the runtime now, use the Colab UI "
-                  "(Runtime → Disconnect and delete runtime) or `colabapi raw -- <teardown-cmd>`.[/]")
 
 
 # --------------------------------------------------------------------------- #

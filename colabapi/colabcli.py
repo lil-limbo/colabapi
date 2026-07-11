@@ -61,6 +61,10 @@ class ColabResult:
 class ColabCLI:
     def __init__(self, binary: Optional[str] = None):
         self.binary = binary or os.environ.get(BINARY_ENV) or DEFAULT_BINARY
+        # When set, every session-scoped command targets this named `colab`
+        # session via `-s`, so colabapi keeps working even if the account has
+        # other sessions running. Set by new_runtime / when a Session is loaded.
+        self.session: Optional[str] = None
 
     # -- discovery -----------------------------------------------------------
     def path(self) -> Optional[str]:
@@ -134,6 +138,10 @@ class ColabCLI:
         proc = subprocess.run([exe, *args], env=self._child_env())  # inherits stdin/out/err
         return proc.returncode
 
+    def _session_args(self) -> list:
+        """`-s <name>` for the colabapi-owned session, or nothing if unset."""
+        return ["-s", self.session] if self.session else []
+
     # -- high-level commands (the single place flags are mapped) --------------
     def version(self) -> str:
         # The official CLI exposes version as a subcommand (`colab version`),
@@ -163,25 +171,38 @@ class ColabCLI:
         """
         return self._exec_tty(["sessions"])
 
-    def new_runtime(self, colab_flags: Sequence[str]) -> int:
+    def new_runtime(self, colab_flags: Sequence[str], name: Optional[str] = None) -> int:
         """Allocate a runtime via `colab new`, interactively.
 
         Run with an inherited TTY (not captured) so that if this is the first
         authenticated call, Google's browser OAuth flow runs correctly, and the
         user sees colab's own progress output. Returns the exit code.
-        `colab_flags` is the accelerator mapping from runtime.py.
+        `colab_flags` is the accelerator mapping from runtime.py. When `name` is
+        given we create the session as `-s <name>` and remember it, so every
+        later command can target exactly this session even if others exist.
         """
-        return self._exec_tty(["new", *colab_flags])
+        args = ["new"]
+        if name:
+            args += ["-s", name]
+        args += list(colab_flags)
+        code = self._exec_tty(args)
+        if name and code == 0:
+            self.session = name
+        return code
 
     def status(self) -> ColabResult:
-        return self._run(["status"], timeout=30)
+        return self._run(["status", *self._session_args()], timeout=30)
+
+    def stop_session(self) -> ColabResult:
+        """Stop and release the runtime (`colab stop`), targeting our session."""
+        return self._run(["stop", *self._session_args()], timeout=60)
 
     def console(self) -> int:
         """Interactive PTY shell on the runtime (Google's `colab console`)."""
-        return self._exec_tty(["console"])
+        return self._exec_tty(["console", *self._session_args()])
 
     def repl(self) -> int:
-        return self._exec_tty(["repl"])
+        return self._exec_tty(["repl", *self._session_args()])
 
     def exec_code(self, code: str, timeout: float = 40) -> ColabResult:
         """Run Python code on the runtime and capture its stdout.
@@ -191,7 +212,7 @@ class ColabCLI:
         keep-alive send small Python snippets through here. With a single active
         session the CLI infers it, so no `--session` is needed.
         """
-        return self._run(["exec"], timeout=timeout, input=code)
+        return self._run(["exec", *self._session_args()], timeout=timeout, input=code)
 
     def raw(self, args: Sequence[str]) -> int:
         """Passthrough escape hatch: `colabapi raw -- <args>` -> `colab <args>`."""

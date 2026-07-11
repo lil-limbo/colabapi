@@ -128,7 +128,7 @@ Press **Ctrl+C** to leave the monitor; type **`exit`** or press **Ctrl+D** to le
 | `colabapi repl` | Interactive Python REPL on the runtime (`colab repl`). |
 | `colabapi monitor` | Live CPU / GPU / RAM monitor. |
 | `colabapi status` | Session info, reachability, estimated time left. |
-| `colabapi stop` | Forget the local session. |
+| `colabapi stop` | Stop the Colab runtime (`colab stop`) and clear the local session. |
 | `colabapi daemon` | Supervisory keepalive (used by the service). |
 | `colabapi service install\|uninstall\|status` | Manage the systemd user service. |
 | `colabapi doctor` | Check your environment and the `colab` CLI interface. |

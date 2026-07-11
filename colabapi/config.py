@@ -2,9 +2,9 @@
 
 Everything colabapi stores lives under the user's XDG config/state directories.
 The only thing ever written to disk is non-sensitive session metadata (chosen
-runtime, tunnel host/port, timestamps) and, if the user opts in, an SSH key
-generated locally for connecting to the tunnel. No Google credentials are ever
-requested, transmitted, or stored. See README "Privacy".
+runtime, the `colab` session name, timestamps) plus a couple of preferences. No
+Google credentials are ever requested, transmitted, or stored. See README
+"Privacy".
 """
 
 from __future__ import annotations
@@ -73,6 +73,7 @@ class Session:
     runtime: str = "cpu"
     started_at: Optional[float] = None  # epoch seconds when `colab new` succeeded
     max_lifetime_hours: float = 12.0  # absolute Colab cap (informational estimate)
+    name: Optional[str] = None  # the `colab` session name colabapi created (passed as -s)
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
