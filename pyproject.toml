@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "colabapi"
+version = "0.1.0"
+description = "Run and keep a Google Colab runtime alive, then reach its terminal from your own server or laptop. A CLI for headless, persistent Colab sessions."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "lil-limbo" }]
+keywords = [
+  "google colab",
+  "colab",
+  "colab terminal",
+  "colab ssh",
+  "colab cli",
+  "persistent colab",
+  "colab keep alive",
+  "headless colab",
+  "colab runtime",
+  "jupyter",
+  "gpu",
+  "remote terminal",
+  "vps",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Distributed Computing",
+  "Topic :: Utilities",
+]
+dependencies = [
+  "click>=8.1",
+  "rich>=13.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/lil-limbo/colabapi"
+Repository = "https://github.com/lil-limbo/colabapi"
+Issues = "https://github.com/lil-limbo/colabapi/issues"
+
+[project.scripts]
+colabapi = "colabapi.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["colabapi*"]

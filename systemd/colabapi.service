@@ -1,0 +1,20 @@
+[Unit]
+Description=colabapi — persistent Google Colab runtime tunnel + keep-alive
+Documentation=https://github.com/lil-limbo/colabapi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs the daemon that maintains the tunnel connection and idle keep-alive for
+# the currently connected Colab runtime. Interactive commands (shell, monitor)
+# are run separately by the user.
+ExecStart=%h/.local/bin/colabapi daemon --foreground
+Restart=on-failure
+RestartSec=5
+# Keep restarting attempts bounded so a dead runtime doesn't spin forever.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=default.target

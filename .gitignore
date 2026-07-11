@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+
+# Local state / secrets (never commit runtime tokens or session data)
+*.log
+.colabapi/
+colabapi/_local/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Downloaded binaries
+bin/cloudflared
+bin/ngrok
