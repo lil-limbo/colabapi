@@ -168,6 +168,20 @@ if failures:
 k32.SetStdHandle(STD_INPUT_HANDLE, conin)
 k32.SetStdHandle(STD_OUTPUT_HANDLE, conout)
 
+# Rebind Python's sys.stdin to the console as well, so that it is a tty.
+#
+# This is not a hack to make the test pass -- it is what makes the test *real*.
+# The reader deliberately branches on sys.stdin.isatty(): an interactive session
+# gets the msvcrt console path, while piped input (`echo ls | colabapi shell`)
+# gets a plain blocking read, because msvcrt talks only to the console and would
+# never see bytes arriving down a pipe. Under CI stdin IS a pipe, so without this
+# the reader would correctly take the piped path and never look at the console we
+# just allocated -- and the injected keystrokes would go unread, which is exactly
+# what happened the first time this ran.
+_console_stdin = open("CONIN$", "r")
+sys.stdin = _console_stdin
+check("Python's stdin is now a real console (isatty)", sys.stdin.isatty())
+
 
 def console_mode() -> int:
     mode = wintypes.DWORD()
