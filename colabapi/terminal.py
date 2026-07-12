@@ -114,11 +114,15 @@ ESCAPE_BYTE = 0x1D
 _now = time.monotonic
 
 # Windows legacy console key codes -> ANSI sequences the remote shell expects.
-# msvcrt.getwch() reports special keys as a '\x00' or '\xe0' prefix followed by
-# a scan-code character; ENABLE_VIRTUAL_TERMINAL_INPUT does NOT change that
-# (it only affects ReadFile/ReadConsole consumers, and msvcrt reads raw console
-# input events). Without this table, arrow keys would reach the remote shell as
-# the two raw bytes 0xE0 0x48 -- i.e. garbage.
+#
+# This is the FALLBACK path, not the usual one. Measured on Windows Server 2025:
+# once ENABLE_VIRTUAL_TERMINAL_INPUT is set (raw mode does that, see _winshim),
+# the console translates special keys itself and msvcrt.getwch() already returns
+# ESC '[' 'A' for Up -- so nothing here is consulted. The table exists for
+# consoles that refuse the VT flag (older Windows builds, some terminal hosts),
+# where getwch still reports a '\x00'/'\xe0' prefix plus a scan-code character.
+# Without it, arrow keys would reach the remote shell as the raw bytes 0xE0 0x48,
+# i.e. garbage.
 _WIN_VT_KEYS = {
     "H": "\x1b[A",   # up
     "P": "\x1b[B",   # down
@@ -370,14 +374,26 @@ class HardenedConsole:
             return b""
 
     def _read_chunk_windows(self) -> Optional[bytes]:
-        """Console input via msvcrt, translated to what a terminal would send.
+        """Console input via msvcrt, as what a terminal would send.
 
         getwch (not getch): getch returns bytes in the console's OEM code page,
         which mangles any non-ASCII input; getwch returns proper text we can
-        encode as UTF-8. Special keys arrive as a '\\x00'/'\\xe0' prefix plus a
-        scan code and are translated to ANSI sequences (see _WIN_VT_KEYS) --
-        they are NOT affected by ENABLE_VIRTUAL_TERMINAL_INPUT, which only
-        rewrites input read through ReadFile/ReadConsole.
+        encode as UTF-8.
+
+        On special keys, measured on Windows Server 2025 rather than assumed:
+        with ENABLE_VIRTUAL_TERMINAL_INPUT set (which `_winshim` does as part of
+        raw mode), the console itself translates Up into the three characters
+        ESC '[' 'A', and getwch hands them to us one at a time. So on any console
+        where VT input can be enabled we do NOT need to translate anything -- the
+        ANSI sequence is already what arrives. `translate_windows_key` remains as
+        the fallback for consoles too old to accept the flag, where special keys
+        still surface as the legacy '\\x00'/'\\xe0' + scan-code pair; there, the
+        prefix branch below converts them.
+
+        We drain the whole pending buffer per call instead of taking one
+        character, so an escape sequence crosses the wire as a single frame
+        rather than three, and a fast typist or a paste is not spread over dozens
+        of round trips.
 
         msvcrt only speaks to the *console*: with stdin piped (`echo ls |
         colabapi shell`) kbhit() would poll a console the input is not coming
@@ -397,12 +413,22 @@ class HardenedConsole:
         if not msvcrt.kbhit():
             time.sleep(0.02)
             return None
-        ch = msvcrt.getwch()
-        if ch in ("\x00", "\xe0"):
-            return translate_windows_key(ch, msvcrt.getwch()).encode("utf-8")
-        # NB: Ctrl+Z (0x1A) is deliberately passed through, not treated as EOF:
-        # in a raw remote shell it is job control (suspend), same as on POSIX.
-        return ch.encode("utf-8", errors="replace")
+
+        out: list[str] = []
+        # Bounded so a held-down key or a huge paste cannot spin here forever
+        # while the socket goes unserviced.
+        while msvcrt.kbhit() and len(out) < 1024:
+            ch = msvcrt.getwch()
+            if ch in ("\x00", "\xe0"):
+                # Legacy console (no VT input): the scan code always follows
+                # immediately, so this getwch cannot block in practice.
+                out.append(translate_windows_key(ch, msvcrt.getwch()))
+            else:
+                # NB: Ctrl+Z (0x1A) is deliberately passed through, not treated
+                # as EOF: in a raw remote shell it is job control (suspend),
+                # exactly as on POSIX.
+                out.append(ch)
+        return "".join(out).encode("utf-8", errors="replace")
 
     # -- websocket ----------------------------------------------------------
     # Everything we send goes through the outbox queue, never straight to the

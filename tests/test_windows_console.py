@@ -224,7 +224,13 @@ tty.setraw(0, termios.TCSANOW)
 # 2. Inject real keystrokes and read them back through colabapi's reader.
 # --------------------------------------------------------------------------- #
 def press(char: str = "\0", vk: int = 0, scan: int = 0, ctrl: bool = False) -> None:
-    """Push one key-down event into the console's input queue."""
+    """Push one key-down event into the console's input queue.
+
+    Flushes first so a previous key's trailing bytes can never be misread as this
+    one's -- which is precisely what happened before draining was added: an arrow
+    key left "[A" in the buffer and the next assertion picked up the "[".
+    """
+    k32.FlushConsoleInputBuffer(conin)
     rec = INPUT_RECORD()
     rec.EventType = KEY_EVENT
     ke = rec.Event.KeyEvent
@@ -245,20 +251,39 @@ from colabapi.terminal import HardenedConsole  # noqa: E402
 reader = HardenedConsole("t", quiet=True)
 
 
-def read_key(timeout: float = 2.0) -> bytes:
-    """Read one translated keystroke exactly as a live session would.
+def read_key(timeout: float = 2.0, settle: float = 0.15) -> bytes:
+    """Read one keystroke's worth of bytes exactly as a live session would.
 
     Goes through `_read_chunk`, the same call the live stdin reader makes, so
     this exercises the real path rather than a paraphrase of it.
+
+    We assert on the bytes that reach the *remote shell*, not on how the console
+    produced them. That distinction matters: with VT input enabled the console
+    emits ESC '[' 'A' for Up all by itself, and on an older console the same key
+    arrives as a legacy scan-code pair that our table converts. Either way the
+    remote must receive "\\x1b[A" -- so that is what we check, and the test stays
+    honest on both kinds of console.
+
+    Keeps draining for a short settle window so a sequence that arrives split
+    across reads is still assembled into one value.
     """
     import time
 
     deadline = time.time() + timeout
+    buf = b""
     while time.time() < deadline:
         got = reader._read_chunk()
-        if got:
-            return got
-    return b""
+        if not got:
+            continue
+        buf += got
+        end = time.time() + settle
+        while time.time() < end:
+            more = reader._read_chunk()
+            if more:
+                buf += more
+                end = time.time() + settle
+        return buf
+    return buf
 
 
 k32.FlushConsoleInputBuffer(conin)
