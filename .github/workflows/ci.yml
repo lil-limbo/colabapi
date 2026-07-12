@@ -66,10 +66,17 @@ jobs:
           schtasks /Query /TN colabapi
           colabapi service status
           colabapi service uninstall
-          if (schtasks /Query /TN colabapi 2>$null) {
-            Write-Error "task still present after uninstall"; exit 1
+          # A missing task is what we WANT here, and schtasks reports that by
+          # exiting non-zero. pwsh would otherwise carry that last exit code out
+          # of the step and fail the job for succeeding, so check it explicitly
+          # and finish on an exit code we choose.
+          schtasks /Query /TN colabapi 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Error "task still present after uninstall"
+            exit 1
           }
           Write-Host "scheduled task installed, queried, and removed cleanly"
+          exit 0
         shell: pwsh
 
       - name: systemd unit installs (Linux only)
