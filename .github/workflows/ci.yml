@@ -56,6 +56,33 @@ jobs:
       - name: Google's CLI is driveable through the shim
         run: python -m colabapi._colab_shim --help
 
+      - name: Scheduled Task installs and uninstalls (Windows only)
+        if: runner.os == 'Windows'
+        # The background service is what keeps a session alive across logout and
+        # reboot, so "it registered a task" is a load-bearing claim, not a detail.
+        # schtasks must exit 0 and the task must actually be queryable afterwards.
+        run: |
+          colabapi service install
+          schtasks /Query /TN colabapi
+          colabapi service status
+          colabapi service uninstall
+          if (schtasks /Query /TN colabapi 2>$null) {
+            Write-Error "task still present after uninstall"; exit 1
+          }
+          Write-Host "scheduled task installed, queried, and removed cleanly"
+        shell: pwsh
+
+      - name: systemd unit installs (Linux only)
+        if: runner.os == 'Linux'
+        # A CI container has no systemd user bus, so `systemctl --user` cannot
+        # succeed; what we can still prove is that we write a valid unit file to
+        # the right place rather than crashing.
+        run: |
+          colabapi service install || true
+          test -f ~/.config/systemd/user/colabapi.service
+          grep -q 'daemon --foreground' ~/.config/systemd/user/colabapi.service
+          echo "systemd unit written correctly"
+
       - name: Registry registration round-trips (Windows only)
         if: runner.os == 'Windows'
         run: |
