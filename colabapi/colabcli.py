@@ -24,6 +24,8 @@ import sys
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
+from .platform import IS_WINDOWS
+
 # Env override lets users point at a differently-named binary or a wrapper.
 BINARY_ENV = "COLABAPI_COLAB_BIN"
 DEFAULT_BINARY = "colab"
@@ -85,14 +87,47 @@ class ColabCLI:
                     return cand
         return shutil.which(self.binary)
 
+    def importable(self) -> bool:
+        """Can Google's CLI be imported in this interpreter?
+
+        This is what actually matters on Windows: `colab.exe` is installed and
+        looks perfectly healthy, but running it raises ImportError on `termios`
+        before it parses a single argument, so the binary's mere existence proves
+        nothing. What we need there is the *package*, which we drive in-process
+        through `_colab_shim` with the compatibility layer applied.
+        """
+        import importlib.util
+
+        return importlib.util.find_spec("colab_cli") is not None
+
     def require(self) -> str:
+        if IS_WINDOWS:
+            if not self.importable():
+                raise ColabCliNotFound(INSTALL_HINT)
+            return sys.executable
         p = self.path()
         if not p:
             raise ColabCliNotFound(INSTALL_HINT)
         return p
 
     def available(self) -> bool:
+        if IS_WINDOWS:
+            return self.importable()
         return self.path() is not None
+
+    def _command(self, args: Sequence[str]) -> list:
+        """Build the argv that runs Google's CLI with `args`.
+
+        POSIX: invoke the `colab` console script by absolute path (a bare `colab`
+        is not on PATH under pipx, since pipx does not expose dependency scripts).
+
+        Windows: invoke it as `python -m colabapi._colab_shim`, which installs the
+        termios/tty shim and then calls Google's own entry point in-process. Same
+        arguments, same exit codes, so every caller below is unchanged.
+        """
+        if IS_WINDOWS:
+            return [sys.executable, "-m", "colabapi._colab_shim", *args]
+        return [self.require(), *args]
 
     # -- low-level invocation ------------------------------------------------
     def _child_env(self) -> dict:
@@ -112,11 +147,8 @@ class ColabCLI:
     def _run(self, args: Sequence[str], capture: bool = True,
              timeout: Optional[float] = None,
              input: Optional[str] = None) -> ColabResult:
-        # Use the resolved absolute path, not the bare name: when colabapi is
-        # installed via pipx, `colab` lives in colabapi's venv but is NOT on PATH.
-        exe = self.require()
         proc = subprocess.run(
-            [exe, *args],
+            self._command(args),
             capture_output=capture,
             text=True,
             timeout=timeout,
@@ -130,12 +162,10 @@ class ColabCLI:
     def _exec_tty(self, args: Sequence[str]) -> int:
         """Hand the terminal directly to `colab` for interactive subcommands.
 
-        Using subprocess with inherited stdio gives the user Google's real
-        PTY/keepalive behavior for `console`/`repl` without us re-implementing
-        terminal handling. Invoked via the resolved absolute path (see _run).
+        Inheriting stdio gives the user Google's real PTY behavior for `repl` and
+        for the browser sign-in flow without us re-implementing any of it.
         """
-        exe = self.require()
-        proc = subprocess.run([exe, *args], env=self._child_env())  # inherits stdin/out/err
+        proc = subprocess.run(self._command(args), env=self._child_env())
         return proc.returncode
 
     def _session_args(self) -> list:
@@ -198,7 +228,21 @@ class ColabCLI:
         return self._run(["stop", *self._session_args()], timeout=60)
 
     def console(self) -> int:
-        """Interactive PTY shell on the runtime (Google's `colab console`)."""
+        """Interactive shell on the runtime.
+
+        Uses colabapi's own resilient client (see terminal.py) rather than
+        `colab console`. Google's console sets no WebSocket keepalive and has no
+        reconnect logic, so a suspended laptop or a momentary blip ends the
+        session for good; ours pings, reconnects with backoff, and reattaches to
+        a tmux session on the VM so running work survives the drop.
+
+        Set COLABAPI_PLAIN_CONSOLE=1 to use Google's implementation instead --
+        an escape hatch in case Colab ever changes the protocol under us.
+        """
+        if self.session and not os.environ.get("COLABAPI_PLAIN_CONSOLE"):
+            from .terminal import open_console
+
+            return open_console(self.session)
         return self._exec_tty(["console", *self._session_args()])
 
     def repl(self) -> int:

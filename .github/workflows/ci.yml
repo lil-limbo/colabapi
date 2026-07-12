@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest is the point of this workflow: colabapi's whole claim is
+        # that it runs where Google's Colab CLI cannot, and that claim is worth
+        # nothing unless it is tested on a real Windows runner every push.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+
+      - name: Windows compatibility layer
+        run: python tests/test_windows_compat.py
+
+      - name: Real console -- raw mode and injected keystrokes
+        # On Windows this allocates a genuine console, flips raw mode through the
+        # Win32 API for real, and pushes synthetic arrow/Ctrl+C/Unicode keys into
+        # its input queue to assert what the remote shell would receive. This is
+        # the only test that exercises the console code rather than reasoning
+        # about it. Elsewhere it checks the pure key table and exits.
+        run: python tests/test_windows_console.py
+
+      - name: Reconnect state machine
+        run: python tests/test_reconnect.py
+
+      - name: WebSocket close semantics
+        run: python tests/test_close_semantics.py
+
+      - name: End-to-end console (fake /colab/tty)
+        run: python tests/test_e2e_console.py
+
+      - name: CLI starts and reports its environment
+        run: |
+          colabapi --version
+          colabapi doctor
+
+      - name: Google's CLI is driveable through the shim
+        run: python -m colabapi._colab_shim --help
+
+      - name: Registry registration round-trips (Windows only)
+        if: runner.os == 'Windows'
+        run: |
+          colabapi register
+          colabapi doctor
+          colabapi unregister

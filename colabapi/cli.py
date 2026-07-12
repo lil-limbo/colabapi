@@ -20,10 +20,13 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from . import __version__, monitor as monitor_mod, runtime as rt, service, shellview, timing, ui
+from . import (
+    __version__, monitor as monitor_mod, persist, platform as plat,
+    runtime as rt, service, shellview, terminal, timing, ui,
+)
 from .colabcli import ColabCLI, ColabCliNotFound, INSTALL_HINT
 from .config import Config, Session, SessionStore, ensure_dirs
-from .keepalive import KeepAlive
+from .keepalive import KeepAliveSupervisor
 
 console = Console()
 colab = ColabCLI()
@@ -231,7 +234,9 @@ def run(runtime_key: str | None, yes: bool) -> None:
 
     console.print(f"[green]Runtime '{name}' ready.[/] {timing.session_line(s.started_at, s.max_lifetime_hours)}")
     console.print(f"\nNow: [bold]colabapi shell[/] · [bold]colabapi monitor[/] · [bold]colabapi stop {name}[/]")
-    console.print("[dim]Tip: `colabapi service install` keeps it alive after you log out of this box.[/]")
+    console.print("[dim]Tip: `colabapi service install` restarts the keep-alive after a logout "
+                  "or reboot, so the session survives your machine sleeping.[/]")
+    console.print(f"[dim]{persist.detach_hint(name)}[/]")
 
 
 # --------------------------------------------------------------------------- #
@@ -273,6 +278,14 @@ def monitor(name: str | None) -> None:
 
     monitor_mod.live_monitor(_run_remote, line, interval=Config.load().monitor_interval)
     console.print("[dim]Monitor closed.[/]")
+
+
+# Hidden: the resilient console that runs inside the bottom tmux pane of `shell`.
+@cli.command(name="_paneconsole", hidden=True)
+@click.argument("name")
+def _paneconsole(name: str) -> None:
+    """Internal: the reconnecting terminal for one named session (used by `shell`)."""
+    raise SystemExit(terminal.open_console(name))
 
 
 # Hidden: the monitor process that runs inside the top tmux pane of `shell`.
@@ -366,29 +379,44 @@ def stop(name: str | None, keep_remote: bool) -> None:
 # --------------------------------------------------------------------------- #
 @cli.command()
 @click.argument("name", required=False)
-@click.option("--foreground", is_flag=True, help="Run in the foreground (used by systemd).")
+@click.option("--foreground", is_flag=True, help="Run in the foreground (used by the service).")
 def daemon(name: str | None, foreground: bool) -> None:
-    """Supervisory keep-alive: verify the runtime stays reachable, with backoff.
+    """Keep the runtime alive, and restart the keep-alive if it ever dies.
 
-    Google's official CLI runs the primary keep-alive against Colab's own tunnel
-    endpoint; this daemon is a belt-and-suspenders health check that alerts (via
-    the service log) if that stops working, and it never hammers reconnects.
+    The actual ping is Google's own: their CLI ships a keep-alive daemon that
+    calls Colab's tunnel endpoint every 60s. The problem is that they spawn it as
+    a child of your terminal, so it dies when your machine sleeps, you log out,
+    or it reboots -- and the runtime then idles out for no good reason.
+
+    This supervises that daemon and restarts it whenever it is missing (it also
+    deliberately exits every 24h on its own). Run it under `colabapi service
+    install` and the session survives logout and reboot.
+
+    With --foreground and no NAME (how the installed service runs it), every
+    active session is supervised, sessions created later are picked up, and an
+    empty session list means "wait", not "exit" -- a service that exits because
+    there is nothing to do yet would just be restart-looped by systemd.
     """
     _require_colab()
+    if foreground and not name:
+        _daemon_all()
+        return
     s = _pick_session("supervise", name)
-    console.print(f"[cyan]colabapi keep-alive supervisor starting for '{s.name}'[/]")
+    console.print(f"[cyan]colabapi keep-alive supervisor started for '{s.name}'[/]")
 
-    ka = KeepAlive(_run_remote, interval=Config.load().keepalive_interval,
-                   on_error=lambda e: console.print(f"[dim]keep-alive check failed: {e}[/]"))
-    ka.start()
+    sup = KeepAliveSupervisor(s.name, on_event=lambda m: console.print(f"[dim]{m}[/]"))
+    sup.start()
     try:
         while True:
+            if sup.gave_up:
+                console.print(f"[red]{sup.health.reason}[/]")
+                break
             rem = timing.remaining(s.started_at, s.max_lifetime_hours)
             if rem is not None and rem <= 0:
-                console.print("[yellow]Past estimated max lifetime; stopping supervisor.[/]")
-                break
-            if ka.failures >= 5:
-                console.print("[red]Runtime unreachable for several checks; session likely ended.[/]")
+                # Colab's absolute lifetime cap is enforced server-side. Pinging
+                # past it achieves nothing, so we stop rather than hammer it.
+                console.print("[yellow]Past Colab's max lifetime cap; the runtime is gone. "
+                              "Start a new one with `colabapi run`.[/]")
                 break
             time.sleep(15)
             if not foreground:
@@ -396,8 +424,70 @@ def daemon(name: str | None, foreground: bool) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        ka.stop()
-        console.print("[dim]Keep-alive supervisor stopped.[/]")
+        sup.stop()
+        console.print("[dim]Supervisor stopped. (The runtime itself keeps running.)[/]")
+
+
+def _daemon_all() -> None:
+    """Service mode: supervise every active session, forever.
+
+    Re-reads the session store each cycle so sessions started after the service
+    (the normal order of events after a reboot) get picked up without a restart.
+    A session is dropped from supervision -- but never re-added in the same
+    process -- once its supervisor gives up or it passes Colab's lifetime cap;
+    keying the retired set on (name, started_at) means a *new* session reusing
+    the name is supervised again.
+    """
+    console.print("[cyan]colabapi keep-alive supervisor (service mode: all sessions)[/]")
+    sups: dict[str, KeepAliveSupervisor] = {}
+    retired: set[tuple[str, float | None]] = set()
+    said_waiting = False
+    try:
+        while True:
+            active = {s.name: s for s in SessionStore.load().active()}
+            # Start supervising anything new.
+            for sname, s in active.items():
+                if sname in sups or (sname, s.started_at) in retired:
+                    continue
+                rem = timing.remaining(s.started_at, s.max_lifetime_hours)
+                if rem is not None and rem <= 0:
+                    # Past the server-side cap: pinging achieves nothing.
+                    retired.add((sname, s.started_at))
+                    console.print(f"[yellow]'{sname}' is past Colab's max lifetime cap; not supervising.[/]")
+                    continue
+                sup = KeepAliveSupervisor(
+                    sname, on_event=lambda m, n=sname: console.print(f"[dim][{n}] {m}[/]"))
+                sup.start()
+                sups[sname] = sup
+                console.print(f"[green]supervising '{sname}'[/]")
+            # Retire what is finished.
+            for sname in list(sups):
+                s = active.get(sname)
+                gone = s is None
+                capped = (s is not None
+                          and (rem := timing.remaining(s.started_at, s.max_lifetime_hours)) is not None
+                          and rem <= 0)
+                if gone or capped or sups[sname].gave_up:
+                    if sups[sname].gave_up:
+                        console.print(f"[red][{sname}] {sups[sname].health.reason}[/]")
+                    elif capped:
+                        console.print(f"[yellow]'{sname}' passed Colab's max lifetime cap; stopping its supervisor.[/]")
+                    sups[sname].stop()
+                    del sups[sname]
+                    if s is not None:
+                        retired.add((sname, s.started_at))
+            if not active and not said_waiting:
+                console.print("[dim]No active sessions; waiting. (`colabapi run` to start one.)[/]")
+                said_waiting = True
+            elif active:
+                said_waiting = False
+            time.sleep(15)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for sup in sups.values():
+            sup.stop()
+        console.print("[dim]Supervisor stopped. (Runtimes themselves keep running.)[/]")
 
 
 # --------------------------------------------------------------------------- #
@@ -407,18 +497,85 @@ def daemon(name: str | None, foreground: bool) -> None:
 def doctor() -> None:
     """Check the environment and the official `colab` CLI interface."""
     _check_on_path()
+
+    osname = "Windows" if plat.IS_WINDOWS else ("macOS" if plat.IS_MACOS else "Linux")
+    console.print(f"platform: [cyan]{osname}[/] ({plat.default_shell_hint()})")
+
     ok = colab.available()
-    console.print(f"official colab CLI: {'[green]found[/] at ' + colab.path() if ok else '[red]not found[/]'}")
+    if plat.IS_WINDOWS:
+        # On Windows the `colab` binary exists but cannot run (it imports termios
+        # at startup), so what matters is whether we can import and drive the
+        # package in-process through our shim -- not whether the .exe is present.
+        console.print(f"google-colab-cli importable: {'[green]yes[/]' if ok else '[red]no[/]'}")
+        console.print("windows compatibility shim: [green]active[/] "
+                      "[dim](supplies termios/tty; Google's CLI is Linux/macOS-only)[/]")
+        console.print(f"ANSI colours: {'[green]on[/]' if plat.supports_ansi() else '[yellow]unavailable[/]'}")
+        console.print("registered in Windows: "
+                      f"{'[green]yes[/]' if _winreg_registered() else '[yellow]no[/] (run `colabapi register`)'}")
+    else:
+        console.print(
+            "official colab CLI: "
+            + (f"[green]found[/] at {colab.path()}" if ok else "[red]not found[/]")
+        )
     if not ok:
         console.print(Panel.fit(INSTALL_HINT, border_style="yellow"))
         return
+
     console.print(f"colab version: [cyan]{colab.version()}[/]")
     # Surface the live `new` interface so flag drift is visible.
     help_new = colab.help_text("new")
     for flag in ("--gpu", "--tpu"):
         mark = "[green]present[/]" if flag in help_new else "[yellow]NOT found, flag mapping may need update[/]"
         console.print(f"colab new {flag}: {mark}")
+    console.print(f"service: {'[green]installed[/]' if service.is_installed() else '[yellow]not installed[/]'}")
     console.print("[dim]If flags differ, edit colabapi/runtime.py (colab_flags); that's the single source.[/]")
+
+
+def _winreg_registered() -> bool:
+    from . import winreg_install
+
+    return winreg_install.is_registered()
+
+
+# --------------------------------------------------------------------------- #
+# windows registry
+# --------------------------------------------------------------------------- #
+@cli.command()
+def register() -> None:
+    """Register colabapi with Windows (Installed apps + Start menu / Win+R).
+
+    A pipx install leaves an .exe on disk but tells Windows nothing about it, so
+    colabapi never shows up in Settings -> Installed apps and cannot be launched
+    from Win+R. This writes the two per-user registry keys that fix both. No
+    administrator rights needed, and `colabapi unregister` reverses it.
+    """
+    from . import winreg_install
+
+    if not plat.IS_WINDOWS:
+        console.print("[yellow]This command only applies to Windows.[/] Nothing to do.")
+        return
+    try:
+        exe = winreg_install.register()
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Could not register:[/] {exc}")
+        raise SystemExit(1)
+    console.print(f"[green]Registered colabapi with Windows.[/] ({exe})")
+    console.print("[dim]It now appears in Settings → Installed apps, and `colabapi` "
+                  "works from the Start menu and Win+R.[/]")
+
+
+@cli.command()
+def unregister() -> None:
+    """Remove colabapi's Windows registry entries (does not uninstall the package)."""
+    from . import winreg_install
+
+    if not plat.IS_WINDOWS:
+        console.print("[yellow]This command only applies to Windows.[/] Nothing to do.")
+        return
+    winreg_install.unregister()
+    console.print("[green]Removed colabapi's Windows registry entries.[/]")
+    console.print("[dim]The package itself is still installed "
+                  "(remove it with `pipx uninstall colabapi`).[/]")
 
 
 @cli.command(context_settings={"ignore_unknown_options": True})
@@ -434,21 +591,35 @@ def raw(args: tuple[str, ...]) -> None:
 # --------------------------------------------------------------------------- #
 @cli.group(name="service")
 def svc() -> None:
-    """Install/manage the colabapi systemd user service."""
+    """Install/manage the colabapi background service.
+
+    systemd user service on Linux; a Scheduled Task on Windows.
+    """
 
 
 @svc.command("install")
 def svc_install() -> None:
-    """Install and enable the keep-alive supervisor as a systemd user service."""
-    path = service.install(enable=True, start=False)
+    """Install the keep-alive supervisor as a background service."""
+    try:
+        path = service.install(enable=True, start=False)
+    except service.ServiceUnsupported as exc:
+        console.print(f"[yellow]{exc}[/]")
+        raise SystemExit(1)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Could not install the service:[/] {exc}")
+        raise SystemExit(1)
     console.print(f"[green]Installed[/] {path}")
-    console.print("Start it with: [bold]systemctl --user start colabapi[/]")
+    console.print(f"Start it with: [bold]{service.start_hint()}[/]")
 
 
 @svc.command("uninstall")
 def svc_uninstall() -> None:
-    """Stop and remove the colabapi systemd service."""
-    service.uninstall()
+    """Stop and remove the colabapi service."""
+    try:
+        service.uninstall()
+    except service.ServiceUnsupported as exc:
+        console.print(f"[yellow]{exc}[/]")
+        raise SystemExit(1)
     console.print("[green]Removed the colabapi service.[/]")
 
 

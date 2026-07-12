@@ -1,10 +1,12 @@
 """Local configuration and session state.
 
-Everything colabapi stores lives under the user's XDG config/state directories.
-The only thing ever written to disk is non-sensitive session metadata (chosen
-runtime, the `colab` session name, timestamps) plus a couple of preferences. No
-Google credentials are ever requested, transmitted, or stored. See README
-"Privacy".
+Everything colabapi stores lives under the conventional per-user directories for
+the platform: XDG on Linux, %APPDATA%/%LOCALAPPDATA% on Windows (see platform.py
+-- scattering dotfiles through C:\\Users\\name is what makes a ported tool feel
+foreign). The only thing ever written to disk is non-sensitive session metadata
+(chosen runtime, the `colab` session name, timestamps) plus a couple of
+preferences. No Google credentials are ever requested, transmitted, or stored.
+See README "Privacy".
 """
 
 from __future__ import annotations
@@ -12,19 +14,13 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any, Optional
 
+from .platform import IS_WINDOWS, config_dir, data_dir, state_dir
 
-def _xdg(env: str, default: Path) -> Path:
-    value = os.environ.get(env)
-    return Path(value) if value else default
-
-
-HOME = Path.home()
-CONFIG_DIR = _xdg("XDG_CONFIG_HOME", HOME / ".config") / "colabapi"
-STATE_DIR = _xdg("XDG_STATE_HOME", HOME / ".local" / "state") / "colabapi"
-DATA_DIR = _xdg("XDG_DATA_HOME", HOME / ".local" / "share") / "colabapi"
+CONFIG_DIR = config_dir()
+STATE_DIR = state_dir()
+DATA_DIR = data_dir()
 
 CONFIG_FILE = CONFIG_DIR / "config.json"
 SESSION_FILE = STATE_DIR / "session.json"  # legacy single-session file (migrated)
@@ -34,6 +30,10 @@ SESSIONS_FILE = STATE_DIR / "sessions.json"  # current multi-session registry
 def ensure_dirs() -> None:
     for d in (CONFIG_DIR, STATE_DIR, DATA_DIR):
         d.mkdir(parents=True, exist_ok=True)
+    if IS_WINDOWS:
+        # NTFS inherits ACLs from the parent, and %LOCALAPPDATA% is already
+        # per-user and private. chmod would be a no-op that only looks reassuring.
+        return
     # Keep the tree private (config may hold non-Google tokens like preferences).
     try:
         os.chmod(DATA_DIR, 0o700)

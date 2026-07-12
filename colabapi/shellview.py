@@ -20,6 +20,7 @@ import sys
 from rich.console import Console
 
 from .colabcli import ColabCLI
+from .platform import IS_WINDOWS
 
 console = Console()
 
@@ -34,7 +35,10 @@ def _child_env(colab: ColabCLI) -> dict:
 def open_shell(colab: ColabCLI, name: str) -> int:
     """Open the shell for session `name`, with a live monitor on top if possible."""
     colab.session = name
-    if shutil.which("tmux"):
+    # Only split on Linux/macOS. A `tmux` on Windows means WSL or Git-Bash, whose
+    # tmux cannot drive the Windows console we are actually attached to, so the
+    # split would half-render; the plain view is correct there.
+    if not IS_WINDOWS and shutil.which("tmux"):
         return _open_tmux(colab, name)
     return _open_plain(colab, name)
 
@@ -51,11 +55,14 @@ def _open_tmux(colab: ColabCLI, name: str) -> int:
         f"OAUTHLIB_RELAX_TOKEN_SCOPE=1 "
     )
     monitor_cmd = env_prefix + f"{shlex.quote(py)} -m colabapi.cli _panemonitor {shlex.quote(name)}"
-    # When the shell exits, kill the whole tmux session so `attach` returns and we
-    # clean up (otherwise the monitor pane would keep the session alive).
+    # Run colabapi's own resilient console (terminal.py) in the pane rather than
+    # `colab console`: Google's has no keepalive ping and no reconnect, so a blip
+    # would kill the shell inside the split and tear the whole layout down.
+    # When the shell exits, kill the tmux session so `attach` returns and we clean
+    # up (otherwise the monitor pane would keep the session alive forever).
     console_cmd = (
         env_prefix
-        + f"{shlex.quote(exe)} console -s {shlex.quote(name)}; "
+        + f"{shlex.quote(py)} -m colabapi.cli _paneconsole {shlex.quote(name)}; "
         + f"tmux kill-session -t {shlex.quote(tmux_ses)} 2>/dev/null"
     )
 
@@ -90,19 +97,28 @@ def _open_tmux(colab: ColabCLI, name: str) -> int:
 
 
 def _open_plain(colab: ColabCLI, name: str) -> int:
-    """Fallback without tmux: print a monitor snapshot, then hand over the shell."""
-    from . import monitor as monitor_mod
+    """No local split: print a monitor snapshot, then hand over the shell.
+
+    This is the normal path on Windows (where the tmux split does not apply) and
+    the fallback anywhere tmux is missing. The shell itself is identical -- the
+    same resilient, reconnecting client -- so only the live monitor pane is lost,
+    and `colabapi monitor` still gives that in another window.
+    """
+    from . import monitor as monitor_mod, persist
 
     def run_remote(code: str) -> str:
         res = colab.exec_code(code)
         return res.stdout if res.stdout.strip() else res.stderr
 
-    console.print("[dim]tmux not found; showing a one-shot monitor snapshot, then the shell.[/]")
+    if not IS_WINDOWS:
+        console.print("[dim]tmux not found locally; showing a snapshot, then the shell.[/]")
     try:
         console.print(monitor_mod.build_panel(run_remote, f"session {name}"))
     except Exception as exc:  # noqa: BLE001
         console.print(f"[dim](could not read monitor: {exc})[/]")
-    console.print(f"[green]Terminal into[/] [cyan]{name}[/]. Type 'exit' or Ctrl-D to return.\n")
+    console.print(f"[green]Terminal into[/] [cyan]{name}[/]. Type 'exit' to return, "
+                  "or press [bold]Ctrl+][/] to detach and leave it running.")
+    console.print(f"[dim]{persist.detach_hint(name)}[/]\n")
     code = colab.console()
     console.print(f"\n[dim]Shell closed. Session '{name}' is still running.[/]")
     return code

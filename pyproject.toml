@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "colabapi"
-version = "0.1.1"
-description = "Run and keep a Google Colab runtime alive, then reach its terminal from your own server or laptop. A CLI for headless, persistent Colab sessions."
+version = "0.2.0"
+description = "Run and keep a Google Colab runtime alive, then reach its terminal from your own server, laptop, or Windows PC. A CLI for headless, persistent Colab sessions -- with Windows support the official CLI does not have."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -16,6 +16,7 @@ keywords = [
   "colab terminal",
   "colab ssh",
   "colab cli",
+  "colab windows",
   "persistent colab",
   "colab keep alive",
   "headless colab",
@@ -24,6 +25,7 @@ keywords = [
   "gpu",
   "remote terminal",
   "vps",
+  "powershell",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -32,6 +34,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -41,6 +44,10 @@ classifiers = [
 dependencies = [
   "click>=8.1",
   "rich>=13.0",
+  # Used directly by colabapi/terminal.py (the resilient console). It is also a
+  # transitive dependency of google-colab-cli, but relying on a transitive dep
+  # for a direct import is how installs break the day upstream drops it.
+  "websocket-client>=1.8",
   # Google's official Colab CLI. Pulled in automatically so a single
   # `pipx install colabapi` installs the whole system, so the user never has to
   # install this separately. colabapi locates its `colab` binary inside its own
