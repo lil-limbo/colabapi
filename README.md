@@ -51,6 +51,20 @@ colabapi never handles your Google password
 pipx install colabapi
 ```
 
+### As root (VPS, container, `sudo -i`)
+
+Install system-wide so the command lands in `/usr/local/bin`, which is already on
+root's `PATH`:
+
+```bash
+pipx install --global colabapi
+```
+
+> **Why:** a plain `pipx install` as root puts the script in `/root/.local/bin`, which
+> most distros do **not** add to root's `PATH`. The install succeeds but you get
+> `colabapi: command not found`. `--global` avoids that. (The one-line install script
+> below detects root and does this for you.)
+
 ### With pip
 
 ```bash

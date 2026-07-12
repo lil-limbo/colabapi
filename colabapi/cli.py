@@ -9,6 +9,8 @@ layer on top.
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
 import time
 
@@ -34,6 +36,30 @@ def _require_colab() -> None:
     if not colab.available():
         console.print(Panel.fit(INSTALL_HINT, title="Missing dependency", border_style="red"))
         raise SystemExit(1)
+
+
+def _check_on_path() -> None:
+    """Warn when `colabapi` is installed somewhere that is not on PATH.
+
+    A plain `pipx install` / `pip install --user` as root drops the script into
+    /root/.local/bin, which most distros do not put on root's PATH. The install
+    then succeeds but `colabapi` reports "command not found", so we say exactly
+    where it landed and how to fix it. Only reachable when the user invoked us by
+    absolute path (otherwise, by definition, we are already on PATH).
+    """
+    here = os.path.dirname(os.path.abspath(sys.argv[0] or ""))
+    if not here or shutil.which("colabapi"):
+        console.print("colabapi on PATH: [green]yes[/]")
+        return
+    console.print(f"colabapi on PATH: [yellow]no[/] (installed at {here})")
+    fix = f'export PATH="{here}:$PATH"'
+    console.print(Panel.fit(
+        f"`colabapi` is not on your PATH, so the bare command will not work.\n\n"
+        f"Add it for this shell:\n  {fix}\n\n"
+        f"Make it permanent:\n  echo '{fix}' >> ~/.bashrc\n\n"
+        f"Or reinstall system-wide (recommended as root):\n"
+        f"  pipx install --global --force colabapi",
+        title="Not on PATH", border_style="yellow"))
 
 
 def _session_label(s: Session) -> str:
@@ -380,6 +406,7 @@ def daemon(name: str | None, foreground: bool) -> None:
 @cli.command()
 def doctor() -> None:
     """Check the environment and the official `colab` CLI interface."""
+    _check_on_path()
     ok = colab.available()
     console.print(f"official colab CLI: {'[green]found[/] at ' + colab.path() if ok else '[red]not found[/]'}")
     if not ok:
