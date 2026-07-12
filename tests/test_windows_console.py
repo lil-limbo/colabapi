@@ -232,12 +232,16 @@ reader = HardenedConsole("t", quiet=True)
 
 
 def read_key(timeout: float = 2.0) -> bytes:
-    """Read one translated keystroke exactly as a live session would."""
+    """Read one translated keystroke exactly as a live session would.
+
+    Goes through `_read_chunk`, the same call the live stdin reader makes, so
+    this exercises the real path rather than a paraphrase of it.
+    """
     import time
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        got = reader._read_char()
+        got = reader._read_chunk()
         if got:
             return got
     return b""
