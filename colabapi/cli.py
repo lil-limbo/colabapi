@@ -153,6 +153,108 @@ def login() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# logout
+# --------------------------------------------------------------------------- #
+@cli.command()
+def logout() -> None:
+    """Sign out of Google and forget every session, so you can start over.
+
+    Google's CLI caches its OAuth token at ~/.config/colab-cli/token.json (the
+    same literal path on every platform, Windows included, because Google
+    hardcodes it via expanduser). Removing that file is what actually signs the
+    user out; we also drop Google's session list and colabapi's own bookkeeping
+    so `sessions` and `shell` start from a clean slate. The OAuth *client*
+    config (~/.colab-cli-oauth-config.json) is deliberately left alone: it holds
+    no credentials, and deleting it would break the next login.
+    """
+    removed = False
+
+    # Google's credential cache and session list. expanduser, not config_dir():
+    # these paths belong to Google's CLI, and it puts them under ~/.config on
+    # every platform.
+    for fname in ("token.json", "sessions.json"):
+        path = os.path.expanduser(os.path.join("~", ".config", "colab-cli", fname))
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                removed = True
+        except OSError as exc:
+            console.print(f"[yellow]Could not remove {path}:[/] {exc}")
+
+    # colabapi's own session registry (the store behind `sessions` / `shell`).
+    try:
+        store = SessionStore.load()
+        if store.sessions:
+            store.sessions = []
+            store.save()
+            removed = True
+    except Exception:  # noqa: BLE001 -- a corrupt store must not block signing out
+        try:
+            from .config import SESSIONS_FILE
+            SESSIONS_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    if removed:
+        console.print("[green]Signed out of Google.[/] Run [bold]colabapi login[/] to sign in again.")
+        console.print("[dim]Any runtimes still allocated on Colab's side keep running until "
+                      "Colab's timers end them.[/]")
+    else:
+        console.print("You are already signed out.")
+
+
+# --------------------------------------------------------------------------- #
+# ui
+# --------------------------------------------------------------------------- #
+# Named explicitly: the function cannot be called `ui` without shadowing the
+# `ui` picker module imported at the top of this file.
+@cli.command(name="ui")
+def ui_cmd() -> None:
+    """Open the colabapi desktop window (a graphical front end for the CLI)."""
+    try:
+        from . import gui
+    except ImportError:
+        _tk_missing_help()
+        raise SystemExit(1)
+    try:
+        code = gui.run()
+    except gui.TkUnavailable as exc:
+        _tk_missing_help(str(exc))
+        raise SystemExit(1)
+    except Exception as exc:  # noqa: BLE001 -- a broken display must not traceback
+        console.print(f"[red]Could not open the colabapi window:[/] {exc}")
+        console.print("[dim]All the same actions work from the command line "
+                      "(see `colabapi --help`).[/]")
+        raise SystemExit(1)
+    raise SystemExit(code)
+
+
+def _tk_missing_help(detail: str = "") -> None:
+    """Explain how to get Tkinter, the one piece pip cannot install."""
+    if "display" in detail:
+        # Tkinter is fine; there is just no screen (headless box, plain ssh).
+        console.print(Panel.fit(
+            "No graphical display is reachable, so the window cannot open.\n"
+            f"[dim]{detail}[/]\n\n"
+            "Run this on a machine with a desktop session (or connect with\n"
+            "X forwarding: [bold]ssh -X[/]). Every action in the window is\n"
+            "also a plain command; see [bold]colabapi --help[/].",
+            title="colabapi ui", border_style="yellow"))
+        return
+    lines = ["The graphical window needs Tkinter, which is part of Python itself\n"
+             "but is sometimes packaged separately."]
+    if detail:
+        lines.append(f"\n[dim]{detail}[/]")
+    if plat.IS_LINUX:
+        lines.append("\nInstall it, then retry:\n  [bold]sudo apt install python3-tk[/]   (Debian / Ubuntu / Kali)\n"
+                     "  [bold]sudo dnf install python3-tkinter[/]   (Fedora)")
+    else:
+        lines.append("\nReinstall Python from python.org with the default options\n"
+                     "(they include Tkinter), then retry.")
+    console.print(Panel.fit("".join(lines), title="colabapi ui", border_style="yellow"))
+
+
+# --------------------------------------------------------------------------- #
 # runtimes
 # --------------------------------------------------------------------------- #
 @cli.command()
@@ -509,7 +611,14 @@ def doctor() -> None:
         console.print(f"google-colab-cli importable: {'[green]yes[/]' if ok else '[red]no[/]'}")
         console.print("windows compatibility shim: [green]active[/] "
                       "[dim](supplies termios/tty; Google's CLI is Linux/macOS-only)[/]")
-        console.print(f"ANSI colours: {'[green]on[/]' if plat.supports_ansi() else '[yellow]unavailable[/]'}")
+        if plat.supports_ansi():
+            console.print("ANSI colours: [green]on[/]")
+        elif not sys.stdout.isatty():
+            # Piped or captured output disables colour by design; without the
+            # qualifier this line reads as a fault when nothing is wrong.
+            console.print("ANSI colours: [yellow]unavailable[/] (output is not a terminal)")
+        else:
+            console.print("ANSI colours: [yellow]unavailable[/]")
         console.print("registered in Windows: "
                       f"{'[green]yes[/]' if _winreg_registered() else '[yellow]no[/] (run `colabapi register`)'}")
     else:
@@ -630,6 +739,17 @@ def svc_status() -> None:
 
 
 def main() -> None:
+    # Windows first: when stdout is redirected, piped, or captured (a log file,
+    # an IDE, CI, or the Scheduled Task the service installs), Python encodes it
+    # as the legacy ANSI code page (cp1252), which cannot represent the glyphs
+    # this tool prints. Force UTF-8 before Rich or anything else writes a byte;
+    # errors="replace" guarantees a mangled glyph instead of a crash.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError):
+                pass
     try:
         cli()
     except ColabCliNotFound as exc:

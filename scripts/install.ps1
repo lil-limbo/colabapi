@@ -3,14 +3,19 @@
     Installs colabapi on Windows (PowerShell or CMD).
 
 .DESCRIPTION
-    One-liner:
+    One-liner (pinned to a released tag, so what runs is what was reviewed):
 
-      irm https://raw.githubusercontent.com/lil-limbo/colabapi/main/scripts/install.ps1 | iex
+      irm https://raw.githubusercontent.com/lil-limbo/colabapi/v0.2.1/scripts/install.ps1 | iex
+
+    (The same script on `main` also works, but the tag is the recommended URL.)
 
     Installs colabapi with pipx (isolated venv, the recommended way to install a
     Python CLI), makes sure the install directory is actually on PATH, and
     registers colabapi with Windows so it shows up in Settings -> Installed apps
     and runs from the Start menu / Win+R.
+
+    If no Python 3.12+ is found, offers to install Python via winget (with your
+    consent) instead of dead-ending, then continues by itself.
 
     Nothing here needs administrator rights: everything is a per-user install.
 
@@ -27,36 +32,98 @@ function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    $msg" -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host "!!! $msg" -ForegroundColor Red }
 
-# --- 1. Find a usable Python ------------------------------------------------
-# colabapi needs 3.12+, because Google's google-colab-cli requires it.
-Write-Step "Looking for Python 3.12+"
+# --- helpers ------------------------------------------------------------------
 
-$python = $null
-foreach ($candidate in @('python', 'python3', 'py')) {
-    $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
-    if (-not $cmd) { continue }
-    try {
-        $ver = & $candidate -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
-    } catch { continue }
-    if (-not $ver) { continue }
-    $parts = $ver.Trim().Split('.')
-    if ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 12) {
-        $python = $candidate
-        Write-Ok "Found Python $ver ($candidate)"
-        break
-    }
-    Write-Warn "$candidate is Python $ver -- too old (need 3.12+)"
+function Test-StoreStub($path) {
+    # A clean Windows box ships a fake python.exe in WindowsApps (an "App
+    # Execution Alias") that just opens the Microsoft Store. It must never be
+    # treated as a Python. The version probe below also rejects it (it prints
+    # nothing), but recognise it explicitly rather than by accident.
+    return ($path -and $path -like '*\Microsoft\WindowsApps\*')
 }
 
-if (-not $python) {
-    Write-Err "No Python 3.12+ found."
+function Find-Python {
+    # Prefer the `py` launcher: it is PATH-independent, always real (never the
+    # Store stub), and knows every registered install.
+    foreach ($candidate in @('py', 'python', 'python3')) {
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        if (Test-StoreStub $cmd.Source) {
+            Write-Warn "$candidate resolves to the Microsoft Store stub -- skipping"
+            continue
+        }
+        $ver = & $candidate -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $ver) { continue }
+        $parts = $ver.Trim().Split('.')
+        if ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 12) {
+            Write-Ok "Found Python $ver ($candidate)"
+            return $candidate
+        }
+        Write-Warn "$candidate is Python $ver -- too old (need 3.12+)"
+    }
+    return $null
+}
+
+function Update-PathFromRegistry {
+    # A winget install updates the *registry* PATH; this process's $env:PATH is
+    # a stale copy taken at startup. Rebuild it so the fresh python.exe (and
+    # the py launcher) are findable without closing the window.
+    $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user    = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:PATH = "$machine;$user;$env:PATH"
+}
+
+function Show-ManualPythonHelp {
     Write-Host ""
-    Write-Host "Install it, then re-run this script:" -ForegroundColor White
+    Write-Host "Install Python 3.12+ yourself, then re-run this script:" -ForegroundColor White
     Write-Host "    winget install Python.Python.3.13" -ForegroundColor White
     Write-Host "  or download from https://www.python.org/downloads/windows/" -ForegroundColor White
     Write-Host ""
     Write-Host "If you install from python.org, tick 'Add python.exe to PATH'." -ForegroundColor White
-    exit 1
+}
+
+# --- 1. Find a usable Python ------------------------------------------------
+# colabapi needs 3.12+, because Google's google-colab-cli requires it.
+Write-Step "Looking for Python 3.12+"
+
+$python = Find-Python
+
+if (-not $python) {
+    Write-Warn "Python 3.12+ is required and was not found."
+
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    # Under `irm | iex` in an interactive console Read-Host still works; only a
+    # genuinely non-interactive stdin (CI, a redirected script) must not prompt,
+    # because Read-Host would hang there.
+    $canAsk = -not [Console]::IsInputRedirected
+
+    if ($winget -and $canAsk) {
+        $answer = Read-Host "Install Python 3.13 automatically with winget? [Y/n]"
+        if ($answer -eq '' -or $answer -match '^[Yy]') {
+            Write-Step "Installing Python 3.13 with winget"
+            & winget install --id Python.Python.3.13 -e --source winget --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) {
+                Write-Err "winget could not install Python (exit code $LASTEXITCODE)."
+                Show-ManualPythonHelp
+                exit 1
+            }
+            # The new install is on the registry PATH but not this process's.
+            Update-PathFromRegistry
+            $python = Find-Python
+            if (-not $python) {
+                Write-Err "Python was installed but could not be found on PATH yet."
+                Write-Host "Close this window, open a new one, and re-run this script." -ForegroundColor White
+                exit 1
+            }
+        } else {
+            Show-ManualPythonHelp
+            exit 1
+        }
+    } else {
+        if (-not $winget) { Write-Warn "winget is not available on this machine, so Python cannot be installed automatically." }
+        Show-ManualPythonHelp
+        exit 1
+    }
 }
 
 # --- 2. Make sure pipx is available -----------------------------------------
@@ -97,20 +164,26 @@ if (Test-Path $pipxBin) {
 }
 
 # --- 5. Register with Windows -----------------------------------------------
-# Makes colabapi a real installed app: visible in Settings -> Installed apps,
-# launchable from Win+R and the Start menu, uninstallable the normal way.
+# Makes colabapi a real installed app: visible in Settings -> Installed apps
+# with its own icon, launchable from the Start menu (opens the colabapi
+# window), uninstallable the normal way.
 Write-Step "Registering with Windows"
-try {
-    & colabapi register
-    Write-Ok "Registered"
-} catch {
+# NOTE: a native exe that fails does NOT throw in PowerShell, so try/catch
+# would never fire here; the exit code is the only truth.
+& colabapi register
+if ($LASTEXITCODE -ne 0) {
     Write-Warn "Could not register (colabapi still works). Run 'colabapi register' later."
+} else {
+    Write-Ok "Registered"
 }
 
 # --- 6. Verify --------------------------------------------------------------
 Write-Step "Verifying"
 if (Get-Command colabapi -ErrorAction SilentlyContinue) {
     & colabapi --version
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "colabapi is installed but did not start cleanly. Run 'colabapi doctor' for details."
+    }
     Write-Host ""
     Write-Host "colabapi is ready." -ForegroundColor Green
     Write-Host ""
@@ -120,6 +193,8 @@ if (Get-Command colabapi -ErrorAction SilentlyContinue) {
     Write-Host "# pick a runtime (CPU / T4 GPU / ...)" -ForegroundColor DarkGray
     Write-Host "  colabapi shell     " -NoNewline -ForegroundColor White
     Write-Host "# terminal into the Colab VM" -ForegroundColor DarkGray
+    Write-Host "  colabapi ui        " -NoNewline -ForegroundColor White
+    Write-Host "# or use the graphical window (also in the Start menu)" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "If 'colabapi' is not found in a NEW window, close and reopen it" -ForegroundColor DarkGray
     Write-Host "so PATH refreshes." -ForegroundColor DarkGray

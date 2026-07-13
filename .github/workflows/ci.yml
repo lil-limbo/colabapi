@@ -16,7 +16,9 @@ jobs:
         # that it runs where Google's Colab CLI cannot, and that claim is worth
         # nothing unless it is tested on a real Windows runner every push.
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.12", "3.13"]
+        # 3.14 is what python.org hands a new user who clicks the big download
+        # button, so the default-user version must never be the untested one.
+        python: ["3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +32,12 @@ jobs:
 
       - name: Windows compatibility layer
         run: python tests/test_windows_compat.py
+
+      - name: CLI survives a legacy-code-page (cp1252) captured stdout
+        # Captured output is what a log file, an IDE, CI itself, or the
+        # Scheduled Task sees; the CLI must print its glyphs there without a
+        # UnicodeEncodeError on any OS.
+        run: python tests/test_windows_encoding.py
 
       - name: Real console -- raw mode and injected keystrokes
         # On Windows this allocates a genuine console, flips raw mode through the

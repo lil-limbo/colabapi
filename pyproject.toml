@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "colabapi"
-version = "0.2.0"
+version = "0.2.1"
 description = "Run and keep a Google Colab runtime alive, then reach its terminal from your own server, laptop, or Windows PC. A CLI for headless, persistent Colab sessions -- with Windows support the official CLI does not have."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -38,6 +38,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: System :: Distributed Computing",
   "Topic :: Utilities",
 ]
@@ -64,5 +65,13 @@ Issues = "https://github.com/lil-limbo/colabapi/issues"
 [project.scripts]
 colabapi = "colabapi.cli:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["colabapi*"]
+
+[tool.setuptools.package-data]
+# The logo ships inside the package: the Tk window icon, the Windows
+# DisplayIcon, and the Start-menu shortcut all load it via importlib.resources.
+colabapi = ["assets/*"]
