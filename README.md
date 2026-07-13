@@ -1,12 +1,12 @@
 # colabapi: a terminal for a persistent Google Colab runtime
 
-**Run Google Colab from your own terminal — on Linux, macOS, *and Windows* — keep the runtime alive after you close the browser, and reach its shell from any VPS or laptop.** `colabapi` is a small, open source command line tool that turns a Google Colab GPU/TPU session into something you can drive headlessly. Perfect for demos, MVPs, and long running jobs that must survive after the Colab web tab is gone.
+**Run Google Colab from your own terminal  on Linux, macOS, *and Windows*  keep the runtime alive after you close the browser, and reach its shell from any VPS or laptop.** `colabapi` is a small, open source command line tool that turns a Google Colab GPU/TPU session into something you can drive headlessly. Perfect for demos, MVPs, and long running jobs that must survive after the Colab web tab is gone.
 
 > **In one line:** `colabapi` gives you a persistent Colab terminal on your own machine, using Google's official, ban safe sign in and tunnel, and it never sees your Google password.
 
 **Two things you only get here:**
 
-- 🪟 **It works on Windows.** Google's official Colab CLI is [Linux and macOS only](#windows) — it fails on Windows before it can even parse a command. colabapi ships the compatibility layer that makes it run in PowerShell and CMD.
+- 🪟 **It works on Windows.** Google's official Colab CLI is [Linux and macOS only](#windows)  it fails on Windows before it can even parse a command. colabapi ships the compatibility layer that makes it run in PowerShell and CMD.
 - 🔌 **It survives a dropped connection.** Google's terminal sets no WebSocket keepalive and has no reconnect, so one blip ends your session. colabapi pings, reconnects with backoff, and keeps your running job alive on the VM. [How](#staying-alive-what-actually-kills-a-colab-session).
 
 <!-- Keywords: google colab terminal, colab cli, colab ssh, colab windows, colab powershell, persistent colab, keep colab alive, headless colab, run colab from terminal, colab gpu terminal, colab from vps, colab session keep alive -->
@@ -47,7 +47,7 @@ colabapi adds: Windows support, auto-reconnect, keepalive supervision,
 colabapi never handles your Google password
 ```
 
-`colabapi` is an **orchestration and reliability layer**. The heavy lifting — OAuth sign in, allocating the runtime, and the encrypted tunnel — is delegated to Google's first party CLI, which is the safe, supported way to do this. We do not reimplement any of it; we make it run where it otherwise cannot, and keep it running when it otherwise would not.
+`colabapi` is an **orchestration and reliability layer**. The heavy lifting  OAuth sign in, allocating the runtime, and the encrypted tunnel  is delegated to Google's first party CLI, which is the safe, supported way to do this. We do not reimplement any of it; we make it run where it otherwise cannot, and keep it running when it otherwise would not.
 
 ## Install
 
@@ -62,7 +62,7 @@ pipx install colabapi
 <a name="windows"></a>
 ### Windows (PowerShell or CMD)
 
-> **Google's official Colab CLI does not support Windows at all** — the docs say Linux and macOS only, and on Windows it raises `ImportError: No module named 'termios'` before it can parse a single command. **colabapi fixes that.** It ships a compatibility layer that supplies the POSIX pieces Windows lacks, so Google's CLI runs here unmodified — we patch nothing inside it, so their updates keep working.
+> **Google's official Colab CLI does not support Windows at all**  the docs say Linux and macOS only, and on Windows it raises `ImportError: No module named 'termios'` before it can parse a single command. **colabapi fixes that.** It ships a compatibility layer that supplies the POSIX pieces Windows lacks, so Google's CLI runs here unmodified  we patch nothing inside it, so their updates keep working.
 
 **One line, in PowerShell:**
 
@@ -72,7 +72,7 @@ irm https://raw.githubusercontent.com/lil-limbo/colabapi/main/scripts/install.ps
 
 That installs Python's `pipx` if needed, installs colabapi, fixes your `PATH`, and registers it with Windows. No administrator rights required.
 
-**Or by hand** (PowerShell or CMD — identical):
+**Or by hand** (PowerShell or CMD  identical):
 
 ```powershell
 python -m pip install --user pipx
@@ -199,9 +199,9 @@ Press **Ctrl+C** to leave the monitor; type **`exit`** or press **Ctrl+D** to le
 
 ## Running as a background service
 
-The service exists to fix a specific hole: Google's keepalive daemon is a child of *your terminal*. Close the laptop, log out of the VPS, or reboot, and it dies — so your runtime idles out even though nothing was actually wrong with it. Registering colabapi with the OS means the keepalive comes back on its own.
+The service exists to fix a specific hole: Google's keepalive daemon is a child of *your terminal*. Close the laptop, log out of the VPS, or reboot, and it dies  so your runtime idles out even though nothing was actually wrong with it. Registering colabapi with the OS means the keepalive comes back on its own.
 
-**Linux** — a systemd **user** service (no root required):
+**Linux**  a systemd **user** service (no root required):
 
 ```bash
 colabapi service install        # writes ~/.config/systemd/user/colabapi.service and enables lingering
@@ -211,7 +211,7 @@ systemctl --user status colabapi
 
 Lingering (`loginctl enable-linger`) is what lets the service keep running after you disconnect from the VPS, which is exactly what you want for an always-on demo.
 
-**Windows** — a **Scheduled Task** that runs at logon (no administrator rights, unlike a true Windows Service):
+**Windows**  a **Scheduled Task** that runs at logon (no administrator rights, unlike a true Windows Service):
 
 ```powershell
 colabapi service install
@@ -244,17 +244,17 @@ It appears in Task Scheduler as **colabapi**, and `colabapi service uninstall` r
 | **Your running job dies with the connection** | If a training run is in the foreground of the remote shell, losing the shell can take the job with it. | Your shell runs inside a **tmux session on the VM that we name and own**, so the job keeps running and reconnecting **puts you back in front of it**. |
 | **The keepalive quietly stops** | Google's keepalive daemon is a child of *your terminal*, and it deliberately exits after 24h. Laptop sleeps → daemon dies → runtime idles out. | We **supervise it and restart it**, and `colabapi service install` keeps that running across logout and reboot. |
 
-**And these are hard caps that nobody can bypass — colabapi doesn't pretend to:**
+**And these are hard caps that nobody can bypass colabapi doesn't pretend to:**
 
 - **Absolute max lifetime (~12 h free, up to 24 h paid).** Enforced server-side. We show an *estimate* of time left and stop cleanly when it's reached, rather than hammering a dead endpoint.
 - **GPU quota / "cannot currently connect to a GPU backend".** Google deliberately doesn't publish the numbers, and they vary. Waiting or upgrading are the only levers.
 - **Out-of-memory or a full disk inside the VM.** That's a workload problem, not a connectivity problem, and we report it as one instead of calling it a disconnect.
 
-The distinction that matters: **your connection dying is not your runtime dying.** Most "session died" reports are the former, which is recoverable — so colabapi recovers from it, and only tells you the session has genuinely ended when Colab actually says so (a 401/404 from the runtime), instead of guessing.
+The distinction that matters: **your connection dying is not your runtime dying.** Most "session died" reports are the former, which is recoverable  so colabapi recovers from it, and only tells you the session has genuinely ended when Colab actually says so (a 401/404 from the runtime), instead of guessing.
 
 ## Safety (please read)
 
-`colabapi` deliberately uses **Google's official CLI** instead of the older "SSH into Colab via ngrok/cloudflared" trick, because Colab's own FAQ lists *remote control such as SSH shells* as an activity that can get a runtime — or an account — terminated. Using the sanctioned path is far safer for your Google account.
+`colabapi` deliberately uses **Google's official CLI** instead of the older "SSH into Colab via ngrok/cloudflared" trick, because Colab's own FAQ lists *remote control such as SSH shells* as an activity that can get a runtime or an account terminated. Using the sanctioned path is far safer for your Google account.
 
 **The keepalive is Google's own.** colabapi doesn't invent a scheme to defeat the idle timeout: it runs the keepalive daemon that ships inside Google's CLI, which pings Colab's own tunnel endpoint once a minute. Our reconnect pings are ordinary WebSocket keepalives on our own socket — standard practice for any long-lived connection, and *not* synthetic activity designed to look like a user who isn't there.
 
