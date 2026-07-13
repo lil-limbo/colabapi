@@ -116,6 +116,89 @@ def _max_lifetime_for(runtime_key: str) -> float:
     return 12.0
 
 
+def _expired_reason(s: Session, c: ColabCLI | None = None) -> str | None:
+    """Why this session looks expired, or None if it still answers.
+
+    A session in colabapi's store can be long dead on Colab's side (idle
+    timeout, lifetime cap, quota) while the store happily lists it as active.
+    Checks in order of cost:
+
+    1. Past the lifetime cap: no network needed.
+    2. Google's own session store: their CLI removes a session it finds lost
+       ("appears to be lost (404/401). Cleaning up."), so a name colabapi has
+       and Google's store lacks means the runtime is gone. A local file read.
+    3. `colab status` -- and its TEXT, not just its exit code: verified against
+       a real dead session, `colab status` prints "Session 'x' not found." and
+       exits 0, so anyone trusting the exit code declares a corpse healthy.
+
+    An auth-shaped failure is deliberately NOT read as expiry: a signed-out
+    user's sessions may all be alive, and telling them to `stop` everything
+    would have them destroy healthy runtimes.
+    """
+    rem = timing.remaining(s.started_at, s.max_lifetime_hours)
+    if rem is not None and rem <= 0:
+        return "it is past Colab's max lifetime cap"
+
+    known = _colab_knows(s.name or "")
+    if known is False:
+        return "Colab no longer has this session (it ended or was cleaned up)"
+
+    c = c or colab
+    if not c.available():
+        return None
+    try:
+        res = c.status()
+    except Exception:  # noqa: BLE001 -- a timed-out probe reads as unreachable
+        return "the runtime did not answer the status check"
+    low = res.text.lower()
+    if "not found" in low or "lost" in low or "404" in low:
+        return "Colab reports the session is gone"
+    if res.ok:
+        return None
+    if any(w in low for w in ("auth", "login", "credential", "sign in")):
+        return None
+    first = res.text.strip().splitlines()[0].strip() if res.text.strip() else ""
+    return f"the runtime no longer answers ({first})" if first else "the runtime no longer answers"
+
+
+def _colab_knows(name: str) -> bool | None:
+    """Does Google's CLI still have `name` in its session store?
+
+    None means "could not read the store", which callers must treat as
+    "cannot tell", never as expired.
+    """
+    try:
+        from colab_cli.state import StateStore
+
+        from .keepalive import CONFIG_ENV
+
+        return StateStore(os.environ.get(CONFIG_ENV) or None).get(name) is not None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _print_expired(name: str, reason: str) -> None:
+    console.print(f"[red]Session '{name}' has expired[/] - {reason}.")
+    console.print(f"It is only a stale entry now. Remove it with: [bold]colabapi stop {name}[/]")
+
+
+def _session_states(sessions: list[Session]) -> dict[str, str | None]:
+    """name -> expired reason (None = answering), all sessions checked at once.
+
+    Parallel because `sessions` is a listing command: three sessions probed one
+    after another would make a table take ten-plus seconds to print.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def check(s: Session) -> tuple[str, str | None]:
+        c = ColabCLI()
+        c.session = s.name
+        return s.name or "", _expired_reason(s, c)
+
+    with ThreadPoolExecutor(max_workers=min(len(sessions), 8) or 1) as pool:
+        return dict(pool.map(check, sessions))
+
+
 # --------------------------------------------------------------------------- #
 # group
 # --------------------------------------------------------------------------- #
@@ -364,7 +447,23 @@ def shell(name: str | None) -> None:
     """
     _require_colab()
     s = _pick_session("open a shell on", name)
+    # Check before opening: connecting a full split layout to a dead runtime
+    # shows an instant "[exited]" and reads like colabapi is broken. Saying
+    # "expired, run stop" up front is both faster and honest.
+    console.print(f"[dim]Checking that '{s.name}' is reachable…[/]")
+    reason = _expired_reason(s)
+    if reason:
+        _print_expired(s.name, reason)
+        raise SystemExit(1)
     shellview.open_shell(colab, s.name)
+    # The closing line used to be an unconditional "still running", which is
+    # exactly what a user staring at a dead session must not be told.
+    reason = _expired_reason(s)
+    if reason:
+        _print_expired(s.name, reason)
+    else:
+        console.print(f"[dim]Shell closed. Session '{s.name}' is still running "
+                      f"(use `colabapi stop {s.name}` to end it).[/]")
 
 
 @cli.command()
@@ -372,7 +471,11 @@ def shell(name: str | None) -> None:
 def repl(name: str | None) -> None:
     """Open an interactive Python REPL on a session (`colab repl`)."""
     _require_colab()
-    _pick_session("open a REPL on", name)
+    s = _pick_session("open a REPL on", name)
+    reason = _expired_reason(s)
+    if reason:
+        _print_expired(s.name, reason)
+        raise SystemExit(1)
     colab.repl()
 
 
@@ -385,6 +488,10 @@ def monitor(name: str | None) -> None:
     """Live CPU / RAM / GPU monitor for a session (Ctrl-C to exit)."""
     _require_colab()
     s = _pick_session("monitor", name)
+    reason = _expired_reason(s)
+    if reason:
+        _print_expired(s.name, reason)
+        raise SystemExit(1)
 
     def line() -> str:
         return f"{s.name} · {timing.session_line(s.started_at, s.max_lifetime_hours)}"
@@ -422,18 +529,29 @@ def _panemonitor(name: str) -> None:
 # --------------------------------------------------------------------------- #
 @cli.command()
 def sessions() -> None:
-    """List the sessions colabapi manages."""
+    """List the sessions colabapi manages, with a live reachability check."""
     active = SessionStore.load().active()
     if not active:
         console.print("No active sessions. Start one with [bold]colabapi run[/].")
         return
+    console.print("[dim]Checking each session's runtime…[/]")
+    states = _session_states(active)
     table = Table(title="colabapi sessions", header_style="bold cyan")
     table.add_column("Name")
     table.add_column("Runtime")
+    table.add_column("State")
     table.add_column("Uptime / est. remaining")
     for s in active:
-        table.add_row(s.name, s.runtime, timing.session_line(s.started_at, s.max_lifetime_hours))
+        reason = states.get(s.name or "")
+        state = "[green]active[/]" if reason is None else "[red]expired[/]"
+        table.add_row(s.name, s.runtime, state,
+                      timing.session_line(s.started_at, s.max_lifetime_hours))
     console.print(table)
+    dead = [n for n, r in states.items() if r is not None]
+    if dead:
+        console.print("[yellow]Expired sessions are stale entries; their runtimes are gone.[/] "
+                      f"Remove them with: [bold]colabapi stop {dead[0]}[/]"
+                      + ("" if len(dead) == 1 else " (and so on for each)"))
 
 
 @cli.command()
@@ -492,9 +610,11 @@ def stop(name: str | None, keep_remote: bool) -> None:
 # --------------------------------------------------------------------------- #
 @cli.command()
 @click.argument("name", required=False)
-@click.option("--foreground", is_flag=True, help="Run in the foreground (used by the service).")
+@click.option("--foreground", is_flag=True,
+              help="Run blocking in this terminal (how the service and the "
+                   "background process run it).")
 def daemon(name: str | None, foreground: bool) -> None:
-    """Keep the runtime alive, and restart the keep-alive if it ever dies.
+    """Toggle the keep-alive: run once to turn it on, run again to turn it off.
 
     The actual ping is Google's own: their CLI ships a keep-alive daemon that
     calls Colab's tunnel endpoint every 60s. The problem is that they spawn it as
@@ -502,18 +622,46 @@ def daemon(name: str | None, foreground: bool) -> None:
     or it reboots -- and the runtime then idles out for no good reason.
 
     This supervises that daemon and restarts it whenever it is missing (it also
-    deliberately exits every 24h on its own). Run it under `colabapi service
-    install` and the session survives logout and reboot.
+    deliberately exits every 24h on its own). The supervisor runs detached in
+    the background: your terminal stays free, and every active session
+    (including ones you start later) is covered. Run `colabapi daemon` again to
+    turn it off. The window's "Keep alive" switch is the same toggle.
 
-    With --foreground and no NAME (how the installed service runs it), every
-    active session is supervised, sessions created later are picked up, and an
-    empty session list means "wait", not "exit" -- a service that exits because
-    there is nothing to do yet would just be restart-looped by systemd.
+    With --foreground it blocks instead, which is how the installed service
+    runs it (and how the background process itself runs). There, an empty
+    session list means "wait", not "exit" -- a service that exits because there
+    is nothing to do yet would just be restart-looped by systemd.
     """
     _require_colab()
-    if foreground and not name:
-        _daemon_all()
+    if foreground:
+        if name:
+            _daemon_one(name)
+        else:
+            _daemon_all()
         return
+
+    from . import daemonctl
+
+    if name:
+        console.print("[dim]The background keep-alive covers every active session, "
+                      f"so '{name}' is included automatically.[/]")
+
+    if daemonctl.is_running():
+        pid = daemonctl.stop()
+        console.print(f"[yellow]Keep-alive deactivated[/] (stopped background supervisor, pid {pid}).")
+        console.print("[dim]Runtimes keep running; without the keep-alive they can idle out. "
+                      "Run `colabapi daemon` to turn it back on.[/]")
+        return
+
+    pid = daemonctl.start()
+    console.print(f"[green]Keep-alive activated.[/] It runs in the background (pid {pid}) "
+                  "and covers every active session, including ones you start later.")
+    console.print("[dim]Your terminal stays free. Run `colabapi daemon` again to turn it off. "
+                  "For keep-alive that survives reboot and logout: `colabapi service install`.[/]")
+
+
+def _daemon_one(name: str) -> None:
+    """Blocking supervision of a single named session (--foreground NAME)."""
     s = _pick_session("supervise", name)
     console.print(f"[cyan]colabapi keep-alive supervisor started for '{s.name}'[/]")
 
@@ -532,8 +680,6 @@ def daemon(name: str | None, foreground: bool) -> None:
                               "Start a new one with `colabapi run`.[/]")
                 break
             time.sleep(15)
-            if not foreground:
-                break
     except KeyboardInterrupt:
         pass
     finally:

@@ -79,10 +79,20 @@ def bootstrap_command(name: str) -> str:
     why `unset TMUX` is load-bearing.
     """
     session = tmux_session_name(name)
+    # Both remote status bars are switched off. The shell runs nested inside
+    # Google's tmux and then ours, and each draws its own status line -- so the
+    # user's terminal showed up to three stacked green bars of raw tmux
+    # bookkeeping ("[colabapi-0:bash*  ...", "[0] 0:tmux*  ...") under
+    # colabapi's own. The first set-option (run while $TMUX still points at
+    # Google's session) blanks theirs; the "\; set-option status off" chained
+    # onto new-session blanks ours, and -A makes that safe to repeat on every
+    # reconnect. Only the LOCAL bar (drawn by shellview) remains, which is the
+    # one that carries colabapi's actual message.
     return (
         "if command -v tmux >/dev/null 2>&1 && "
         f'[ "$(tmux display-message -p "#S" 2>/dev/null)" != "{session}" ]; '
-        f"then unset TMUX; exec tmux new-session -A -s {session}; "
+        "then tmux set-option status off >/dev/null 2>&1; unset TMUX; "
+        f"exec tmux new-session -A -s {session} \\; set-option status off; "
         "fi"
     )
 

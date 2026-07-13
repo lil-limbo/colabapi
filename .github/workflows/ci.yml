@@ -53,6 +53,13 @@ jobs:
       - name: WebSocket close semantics
         run: python tests/test_close_semantics.py
 
+      - name: Registry UninstallString detects pipx and unregisters first
+        # The string this writes is executed months later by a user clicking
+        # Uninstall in Settings; a wrong branch there corrupts the install
+        # (seen on a real machine in the 0.2.2 report), so its contract is
+        # pinned by test on every OS.
+        run: python tests/test_winreg_uninstall.py
+
       - name: End-to-end console (fake /colab/tty)
         run: python tests/test_e2e_console.py
 
@@ -104,3 +111,36 @@ jobs:
           colabapi register
           colabapi doctor
           colabapi unregister
+
+  installer:
+    name: install.ps1 end to end (twice)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Twice is the point of this job. The first run may install pipx itself
+      # (python -m pipx invocation); the second run always hits the branch where
+      # pipx already exists (bare pipx invocation). That second branch is the
+      # one every re-run, upgrade, and developer machine takes, and it is the
+      # branch an array-slicing bug shipped broken in 0.2.2 -- the package tests
+      # all passed while the advertised install command failed. The installer
+      # must be EXECUTED, not reasoned about.
+      - name: First run (fresh machine path)
+        shell: pwsh
+        run: ./scripts/install.ps1
+
+      - name: Second run (pipx already present path)
+        shell: pwsh
+        run: ./scripts/install.ps1
+
+      - name: Installed colabapi actually works
+        shell: pwsh
+        run: |
+          colabapi --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          colabapi doctor
+          if ($LASTEXITCODE -ne 0) { exit 1 }

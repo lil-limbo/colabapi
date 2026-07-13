@@ -68,31 +68,36 @@ def _open_tmux(colab: ColabCLI, name: str) -> int:
 
     env = _child_env(colab)
 
-    def tmux(*args: str) -> subprocess.CompletedProcess:
+    def tmux(*args: str) -> int:
         return subprocess.run(["tmux", *args], env=env,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
-    # Top pane: the live monitor. Window name = session name.
-    tmux("new-session", "-d", "-s", tmux_ses, "-n", name, monitor_cmd)
-    # Bottom pane: the interactive shell.
-    tmux("split-window", "-v", "-t", tmux_ses, console_cmd)
-    # Keep the monitor pane small and focus the shell.
-    tmux("resize-pane", "-t", f"{tmux_ses}.0", "-y", str(_MONITOR_ROWS))
-    tmux("select-pane", "-t", f"{tmux_ses}.1")
+    # The SHELL founds the session, not the monitor. The founding pane is the
+    # one the whole tmux session lives or dies with, and the shell is what the
+    # user came for -- with the monitor as the founding pane (as in 0.2.2), a
+    # monitor that exited early took the layout down or left the shell filling
+    # the terminal with no monitor at all, seemingly at random.
+    if tmux("new-session", "-d", "-s", tmux_ses, "-n", name, console_cmd) != 0:
+        # tmux refused (nested session, broken server): the plain view still works.
+        return _open_plain(colab, name)
+    # Monitor above the shell: -b puts the new pane before (above) the target,
+    # -l fixes its height, -d keeps focus on the shell. If this split fails the
+    # shell simply opens full-height rather than failing the whole command.
+    tmux("split-window", "-v", "-b", "-d", "-l", str(_MONITOR_ROWS),
+         "-t", f"{tmux_ses}.0", monitor_cmd)
     # A distinct prefix (Ctrl-a) avoids clashing with the remote tmux's Ctrl-b.
     tmux("set-option", "-t", tmux_ses, "prefix", "C-a")
     tmux("set-option", "-t", tmux_ses, "status", "on")
     tmux("set-option", "-t", tmux_ses, "status-style", "bg=colour24,fg=white")
     tmux("set-option", "-t", tmux_ses, "status-left", f" colabapi ❯ {name} ")
     tmux("set-option", "-t", tmux_ses, "status-left-length", "48")
-    tmux("set-option", "-t", tmux_ses, "status-right", " Ctrl-a d to detach ")
+    tmux("set-option", "-t", tmux_ses, "status-right", " type: exit to Quit shell ")
+    tmux("set-option", "-t", tmux_ses, "status-right-length", "28")
 
     console.print(f"[green]Opening[/] [cyan]{name}[/]: monitor on top, shell below. "
-                  "[dim](tmux prefix is Ctrl-a; type 'exit' to close)[/]")
+                  "[dim](type 'exit' to quit the shell)[/]")
     code = subprocess.run(["tmux", "attach-session", "-t", tmux_ses], env=env).returncode
     tmux("kill-session", "-t", tmux_ses)  # no-op if already gone
-    console.print(f"[dim]Shell closed. Session '{name}' is still running "
-                  "(use `colabapi stop` to end it).[/]")
     return code
 
 
@@ -119,6 +124,4 @@ def _open_plain(colab: ColabCLI, name: str) -> int:
     console.print(f"[green]Terminal into[/] [cyan]{name}[/]. Type 'exit' to return, "
                   "or press [bold]Ctrl+][/] to detach and leave it running.")
     console.print(f"[dim]{persist.detach_hint(name)}[/]\n")
-    code = colab.console()
-    console.print(f"\n[dim]Shell closed. Session '{name}' is still running.[/]")
-    return code
+    return colab.console()

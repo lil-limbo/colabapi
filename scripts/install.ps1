@@ -5,7 +5,7 @@
 .DESCRIPTION
     One-liner (pinned to a released tag, so what runs is what was reviewed):
 
-      irm https://raw.githubusercontent.com/lil-limbo/colabapi/v0.2.1/scripts/install.ps1 | iex
+      irm https://raw.githubusercontent.com/lil-limbo/colabapi/v0.2.3/scripts/install.ps1 | iex
 
     (The same script on `main` also works, but the tag is the recommended URL.)
 
@@ -131,6 +131,13 @@ if (-not $python) {
 # anything else installed with pip.
 Write-Step "Checking for pipx"
 
+# The executable and its leading arguments are kept apart on purpose. The
+# previous version stored both in one array and re-sliced it at the call site
+# with `$pipx[1..($pipx.Count-1)]` -- but on a 1-element array that slice is
+# `[1..0]`, and PowerShell evaluates 1..0 as the DESCENDING range @(1, 0), not
+# an empty one. The result was `pipx pipx install ...`, which pipx rejects, so
+# the install failed on every machine that already had pipx. Two variables and
+# a plain concatenation have no such edge case.
 if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
     Write-Warn "pipx not found -- installing it"
     & $python -m pip install --user --quiet --upgrade pipx
@@ -138,16 +145,18 @@ if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
     # ensurepath adds pipx's bin dir to the *user* PATH, but only for future
     # shells, so we also add it to this process below.
     & $python -m pipx ensurepath 2>$null | Out-Null
-    $pipx = @($python, '-m', 'pipx')
+    $pipxCmd = $python
+    $pipxArgs = @('-m', 'pipx')
 } else {
     Write-Ok "pipx is installed"
-    $pipx = @('pipx')
+    $pipxCmd = 'pipx'
+    $pipxArgs = @()
 }
 
 # --- 3. Install colabapi ----------------------------------------------------
 Write-Step "Installing colabapi"
 
-& $pipx[0] @($pipx[1..($pipx.Count-1)] + @('install', '--force', 'colabapi'))
+& $pipxCmd @($pipxArgs + @('install', '--force', 'colabapi'))
 if ($LASTEXITCODE -ne 0) { Write-Err "Install failed."; exit 1 }
 Write-Ok "Installed"
 

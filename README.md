@@ -26,7 +26,7 @@ Google Colab is fantastic free (and paid) GPU/TPU compute, but it only lives ins
 
 ## Features
 
-* 🖥 **A desktop app, not just a CLI.** `colabapi ui` opens a clean graphical window (white, minimal, works on Linux and Windows) with live CPU / RAM / GPU / VRAM graphs, a session list, and a **real terminal built into the window** — the shell, sign-in, runtime allocation and everything else run *inside it*, not in a terminal it throws you out to. On Windows it opens straight from the Start menu and the app list.
+* 🖥 **A desktop app, not just a CLI.** `colabapi ui` opens a clean graphical window (white, minimal, works on Linux and Windows) with live CPU / RAM / GPU / VRAM graphs, a session list, a keep-alive switch, and a **real terminal built into the window**: the shell, sign-in, runtime allocation and everything else run *inside it*, not in a terminal it throws you out to. On Windows it opens straight from the Start menu and the app list.
 * 🪟 **Works on Windows** (PowerShell + CMD), which Google's own CLI does not. Registers as real installed software with its own logo.
 * 🔌 **Reconnects instead of dying.** WebSocket keepalive pings, exponential backoff, and your work keeps running on the VM across the drop.
 * 🔐 **Browser sign in, no password handling.** Authentication happens in Google's own login flow (including 2FA / device checks). `colabapi` never asks for, stores, or transmits your Google credentials. `colabapi logout` signs you out again in one command.
@@ -34,7 +34,8 @@ Google Colab is fantastic free (and paid) GPU/TPU compute, but it only lives ins
 * 🎛 **Runtime picker.** List CPU / T4 / L4 / G4 / A100 / H100 / TPU options; paid tier runtimes are clearly flagged as unavailable on a free account.
 * 📈 **Live CPU / GPU / RAM monitor.** `colabapi monitor` streams runtime stats to your terminal (psutil + `nvidia-smi`).
 * ⏱ **Session time display.** See uptime and an estimate of how long before Colab's max lifetime cap.
-* ♻️ **Keepalive that stays up.** Runs Google's own keepalive daemon and restarts it when it dies, which it otherwise does silently.
+* ♻️ **Keepalive that stays up.** Runs Google's own keepalive daemon and restarts it when it dies, which it otherwise does silently. `colabapi daemon` is a toggle: the first run turns the keep-alive on in the background and gives your terminal straight back, the second run turns it off.
+* 🪦 **Honest about dead sessions.** `sessions`, `shell` and `monitor` check that the runtime actually answers. An expired session is called expired, in red, with the exact command to remove it, instead of being listed as active forever.
 * 🧩 **Runs as a background service.** systemd on Linux, a Scheduled Task on Windows, so your session survives logout and reboot.
 * 🔎 **Inspectable & MIT licensed.** Read every line. Nothing phones home.
 
@@ -68,10 +69,10 @@ pipx install colabapi
 **One line, in PowerShell:**
 
 ```powershell
-irm https://raw.githubusercontent.com/lil-limbo/colabapi/v0.2.1/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/lil-limbo/colabapi/v0.2.3/scripts/install.ps1 | iex
 ```
 
-That finds Python 3.12+ (and offers to install it with winget if you have none), installs Python's `pipx` if needed, installs colabapi, fixes your `PATH`, and registers it with Windows. No administrator rights required. The URL is pinned to the released tag, so you can [read exactly what will run](https://github.com/lil-limbo/colabapi/blob/v0.2.1/scripts/install.ps1) before you run it.
+That finds Python 3.12+ (and offers to install it with winget if you have none), installs Python's `pipx` if needed, installs colabapi, fixes your `PATH`, and registers it with Windows. No administrator rights required. The URL is pinned to the released tag, so you can [read exactly what will run](https://github.com/lil-limbo/colabapi/blob/v0.2.3/scripts/install.ps1) before you run it. CI runs this script end to end, twice, on a real Windows runner on every push.
 
 **Or by hand** (PowerShell or CMD, identical):
 
@@ -192,12 +193,14 @@ colabapi ui
 **Everything happens in the window. Nothing opens a second terminal.**
 
 * **Live graphs** across the top: CPU, RAM, GPU and VRAM, read from inside the selected runtime and plotted as they move.
-* **A real terminal** in the window — a full VT emulator, not a log box. `Shell` drops you into the selected runtime (auto-reconnecting, and your work keeps running in tmux across a drop). `New runtime`, `Sign in`, `Monitor` and the rest run *in that same terminal*, on a pty, so their prompts prompt and you answer them right there.
+* **A real terminal** in the window: a full VT emulator, not a log box. `Shell` drops you into the selected runtime (auto-reconnecting, and your work keeps running in tmux across a drop). `New runtime`, `Sign in`, `Monitor` and the rest run *in that same terminal*, on a pty, so their prompts prompt and you answer them right there. **Ctrl+C copies** the selected text (with nothing selected it interrupts, as in any terminal) and **Ctrl+V pastes**.
+* **A "Keep alive" switch** in the header. It is the `colabapi daemon` toggle: on starts the background keep-alive supervisor for every session, off stops it, and the switch always shows the real state of the process.
 * **Select a session, then act on it.** The list on the left is the selection `Shell`, `Stop` and `Monitor` operate on, and it is what the graphs follow. With nothing selected, those buttons are disabled rather than guessing.
+* **Dead sessions are shown dead.** A session whose runtime no longer answers turns red and reads "expired"; the **Delete** button removes it. Stop keeps its confirmation, Delete needs none, because there is nothing left to lose.
 * **Stop** releases the runtime, with a confirmation first.
 * **Keyboard throughout:** Ctrl+N new runtime, Ctrl+S shell, Ctrl+K stop, Ctrl+M monitor, Ctrl+L sign in, F5 refresh. Enter on a session opens its shell. Every action is also a real, focusable button, and the menu bar carries the rest (REPL, status, runtimes, doctor, keep-alive service).
 
-Sign-in is Google's own browser flow, exactly as on the command line — colabapi never sees your password.
+Sign-in is Google's own browser flow, exactly as on the command line: colabapi never sees your password.
 
 * **Windows:** after `colabapi register`, "colabapi" in the Start menu and the app list opens this window directly. Windows has no pty, so there the interactive commands still open a console window; the shell, the graphs and everything else run in the window as normal.
 * **Linux:** the window uses Tkinter, which some distros package separately. If `colabapi ui` says Tkinter is missing, install it with `sudo apt install python3-tk` (Debian / Ubuntu / Kali) or `sudo dnf install python3-tkinter` (Fedora).
@@ -211,13 +214,13 @@ Sign-in is Google's own browser flow, exactly as on the command line — colabap
 | `colabapi logout` | Sign out of Google and forget all sessions, for a clean start. |
 | `colabapi runtimes` | List runtime types and which need a paid plan. |
 | `colabapi run [--runtime KEY]` | Allocate a runtime and name the session (delegates to `colab new -s NAME`). |
-| `colabapi sessions` | List the sessions colabapi manages. |
+| `colabapi sessions` | List the sessions colabapi manages, with a live check that each runtime still answers. |
 | `colabapi shell [NAME]` | Terminal on a session with a live monitor on top; arrow-key picker if NAME omitted. |
 | `colabapi repl [NAME]` | Interactive Python REPL on a session (`colab repl`). |
 | `colabapi monitor [NAME]` | Live CPU / GPU / RAM monitor for a session. |
 | `colabapi status [NAME]` | Session reachability and estimated time left. |
 | `colabapi stop [NAME]` | Stop a session (`colab stop`); arrow-key picker if NAME omitted. |
-| `colabapi daemon [NAME]` | Keepalive supervisor: restarts Google's keepalive whenever it dies (used by the service). |
+| `colabapi daemon` | Toggle the keep-alive: run once to start it in the background (your terminal stays free), run again to stop it. `--foreground` blocks, which is how the service runs it. |
 | `colabapi service install\|uninstall\|status` | Manage the background service (systemd on Linux, Scheduled Task on Windows). |
 | `colabapi register` / `unregister` | **Windows:** add/remove colabapi from Installed apps + Start menu / Win+R. |
 | `colabapi doctor` | Check your environment and the `colab` CLI interface. |
@@ -271,7 +274,7 @@ Be a good citizen: **don't hold GPU runtimes idle just to reserve them.** Colab'
 No. Sign in is handled by Google's official CLI in your browser. `colabapi` has no password code path at all. `colabapi logout` signs you out again whenever you want.
 
 **How do I keep a Google Colab session alive after closing the browser?**
-Allocate a runtime with `colabapi run`, then install the service (`colabapi service install`). Google's keepalive holds off the idle timeout; the systemd service keeps `colabapi` supervising it after you log out.
+Allocate a runtime with `colabapi run`, then run `colabapi daemon` to switch the keep-alive on in the background (run it again to switch it off, or use the "Keep alive" switch in the window). For a keep-alive that survives logout and reboot, install the service instead (`colabapi service install`). Google's keepalive holds off the idle timeout; the supervisor keeps that keepalive itself alive.
 
 **Can I get a terminal / shell into Google Colab?**
 Yes. `colabapi shell` opens a live PTY on the runtime via Google's `colab console`. `colabapi repl` gives a Python REPL.

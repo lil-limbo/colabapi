@@ -130,16 +130,21 @@ def mem_fallback():
     avail = d.get("MemAvailable", d.get("MemFree", 0)) // 1024
     return total - avail, total
 
+# The very first block is sampled over 0.2s instead of the steady 1s: opening
+# the stream already costs a multi-second connect, and the graphs should show
+# numbers the moment it lands, not one further tick later.
+first = True
 while True:
     try:
         if psutil is not None:
-            cpu = psutil.cpu_percent(interval=1.0)
+            cpu = psutil.cpu_percent(interval=0.2 if first else 1.0)
             m = psutil.virtual_memory()
             used, total = m.used // 1048576, m.total // 1048576
         else:
-            time.sleep(1.0)
+            time.sleep(0.2 if first else 1.0)
             cpu = 0.0
             used, total = mem_fallback()
+        first = False
         print("CPU %.1f" % cpu)
         print("MEM %d %d" % (used, total))
         try:
@@ -170,14 +175,28 @@ def parse_block(lines: list) -> dict:
             "gpus": _parse_gpu(out)}
 
 
+class RuntimeUnreachable(RuntimeError):
+    """The runtime did not answer the stats probe.
+
+    Distinct from a zero reading on purpose: `colab exec` against a dead session
+    prints an error instead of our CPU/MEM lines, and parsing that error as
+    numbers yields all-zeros -- a monitor that shows an expired session as a
+    healthy idle machine. No "CPU" line in the reply means there was no reply.
+    """
+
+
 def read_stats(run_remote: RunRemote) -> dict:
     """One reading of the runtime: CPU %, RAM, and every GPU.
 
     The single place the runtime's vitals are read. Both front ends use it -- the
     CLI monitor below, and the window's live graphs -- so they can never disagree
-    about what the numbers mean.
+    about what the numbers mean. Raises RuntimeUnreachable when the runtime does
+    not answer, rather than dressing the failure up as an idle machine.
     """
     out = run_remote(_STATS_SNIPPET)
+    if "CPU " not in out:
+        first = out.strip().splitlines()[0].strip() if out.strip() else "no response"
+        raise RuntimeUnreachable(first[:120])
     cpu, mem_used, mem_total = _parse_cpu_mem(out)
     return {"cpu": cpu, "mem_used": mem_used, "mem_total": mem_total,
             "gpus": _parse_gpu(out)}
@@ -213,12 +232,44 @@ def build_panel(run_remote: RunRemote, session_line: str = "") -> Panel:
     return Panel(Group(*rows), title=title, subtitle=subtitle, border_style="cyan")
 
 
+def _message_panel(message: str, session_line: str, style: str = "dim") -> Panel:
+    return Panel(Text(message, style=style), title="colabapi runtime monitor",
+                 subtitle=session_line or None, border_style="cyan")
+
+
 def live_monitor(run_remote: RunRemote, session_line_fn: Callable[[], str], interval: float = 2.0) -> None:
-    """Render the monitor until interrupted with Ctrl+C."""
+    """Render the monitor until interrupted with Ctrl+C.
+
+    Paints immediately. The first real reading costs a `colab exec` round trip
+    (seconds), and until 0.2.3 the monitor showed nothing at all for that time
+    -- in the `shell` split the top pane just sat blank, which read as broken.
+
+    A probe failure is a frame, not a crash: the panel says the runtime did not
+    answer and keeps trying, and after a few consecutive failures it says
+    plainly that the session looks expired and how to remove it. Previously the
+    exception killed the process, which in the `shell` split silently deleted
+    the monitor pane.
+    """
+    failures = 0
     with Live(refresh_per_second=4, screen=False) as live:
+        live.update(_message_panel("connecting to the runtime…", session_line_fn()))
         try:
             while True:
-                live.update(build_panel(run_remote, session_line_fn()))
+                try:
+                    live.update(build_panel(run_remote, session_line_fn()))
+                    failures = 0
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- an unreachable VM is news, not a crash
+                    failures += 1
+                    if failures >= 3:
+                        msg = ("This session is not answering and looks expired.\n"
+                               "Remove it with:  colabapi stop\n"
+                               f"(last error: {exc})")
+                        live.update(_message_panel(msg, session_line_fn(), style="yellow"))
+                    else:
+                        live.update(_message_panel(
+                            f"runtime not answering (retrying): {exc}", session_line_fn()))
                 time.sleep(interval)
         except KeyboardInterrupt:
             pass

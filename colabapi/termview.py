@@ -115,10 +115,12 @@ class TerminalView(tk.Frame):
         self.text.tag_configure("cursor", background=CURSOR, foreground=BG)
 
         # Keystrokes must reach the runtime, not Tk's own editing bindings, so
-        # every handler ends with "break". Focus follows the click, as in any
+        # the key handler ends with "break". The mouse handler must NOT: Tk's
+        # default press-drag behaviour is what makes text selectable, and
+        # selection is what Ctrl+C copies. Focus follows the click, as in any
         # terminal.
         self.text.bind("<Key>", self._on_key)
-        self.text.bind("<Button-1>", lambda _e: (self.text.focus_set(), "break")[1])
+        self.text.bind("<Button-1>", lambda _e: self.text.focus_set())
         self.text.bind("<Configure>", self._on_configure)
 
         self._drain()      # the one repaint timer, owned by the UI thread
@@ -228,10 +230,47 @@ class TerminalView(tk.Frame):
         self._on_resize = on_resize
 
     def _on_key(self, event) -> str:
+        # Clipboard first, the way every modern terminal resolves the clash
+        # between "Ctrl+C is copy" and "Ctrl+C interrupts": with text selected
+        # it copies, with nothing selected it goes to the remote shell as the
+        # interrupt. Ctrl+V always pastes (the remote shell has no use for a
+        # raw \x16).
+        if event.state & _CTRL:
+            key = event.keysym.lower()
+            if key == "c" and self._copy_selection():
+                return "break"
+            if key == "v":
+                self._paste()
+                return "break"
         seq = _key_to_bytes(event)
         if seq and self._on_input is not None:
             self._on_input(seq)
         return "break"      # never let Tk edit the widget itself
+
+    def _copy_selection(self) -> bool:
+        """Copy the mouse selection to the clipboard. False if nothing selected."""
+        try:
+            selected = self.text.get("sel.first", "sel.last")
+        except tk.TclError:
+            return False
+        if not selected:
+            return False
+        self.clipboard_clear()
+        self.clipboard_append(selected)
+        # Drop the selection so the NEXT Ctrl+C is an interrupt again -- without
+        # this, a forgotten week-old selection would eat every Ctrl+C.
+        self.text.tag_remove("sel", "1.0", "end")
+        return True
+
+    def _paste(self) -> None:
+        """Type the clipboard into the runtime."""
+        try:
+            clip = self.clipboard_get()
+        except tk.TclError:      # empty clipboard, or non-text content
+            return
+        if clip and self._on_input is not None:
+            # A pty expects Enter as \r; pasted text carries \n (or \r\n).
+            self._on_input(clip.replace("\r\n", "\n").replace("\n", "\r"))
 
     # -- geometry ------------------------------------------------------------
     def _on_configure(self, _event=None) -> None:

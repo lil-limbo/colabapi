@@ -150,6 +150,7 @@ class App:
         self.attached_kind = ""
         self.selected: Optional[str] = None
         self._rows: list = []
+        self._dead: set = set()          # session names whose runtime is gone
         self._closing = False
         self._samples: Queue = Queue()
         self._events: Queue = Queue()
@@ -158,6 +159,15 @@ class App:
 
         self.sampler = gauges.Sampler(_open_stats_stream, self._on_sample)
         self.sampler.start()
+
+        # Reachability checker: a session can die on Colab's side (idle-out,
+        # lifetime cap) while the local store lists it as active, and the list
+        # must show that rather than let the user keep clicking Shell at a
+        # corpse. Probing costs a network round trip per session, so it happens
+        # on its own thread and on a slow clock, never on the UI thread.
+        import threading
+        threading.Thread(target=self._check_states_loop,
+                         name="colabapi-statecheck", daemon=True).start()
 
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self._poll_sessions()
@@ -185,6 +195,17 @@ class App:
         self.account = tk.StringVar()
         tk.Label(header, textvariable=self.account, bg=BG, fg=MUTED,
                  font=(FONT, 9)).pack(side="right")
+
+        # The keep-alive switch. Same toggle as `colabapi daemon`: on spawns the
+        # detached supervisor, off stops it. The variable is re-synced from the
+        # real process state on every session poll, so a daemon toggled from a
+        # terminal (or one that died) is reflected here within seconds.
+        self.keepalive_var = tk.BooleanVar(value=False)
+        self.keepalive_btn = ttk.Checkbutton(
+            header, text="Keep alive", variable=self.keepalive_var,
+            command=self._toggle_keepalive)
+        self.keepalive_btn.pack(side="right", padx=(0, 16))
+        self._sync_keepalive()
 
         # Graphs ---------------------------------------------------------------
         self.graphs = gauges.Graphs(root, bg=BG)
@@ -218,6 +239,8 @@ class App:
         self.tree.column("runtime", width=70, anchor="w")
         self.tree.column("left", width=110, anchor="w")
         self.tree.pack(fill="both", expand=True, pady=(6, 8))
+        # A dead session is shown in red; the Delete action removes it.
+        self.tree.tag_configure("dead", foreground="#cf222e")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         # Enter opens a shell on the highlighted row, so the list is fully usable
         # from the keyboard.
@@ -237,6 +260,7 @@ class App:
             ("Shell", self.shell),
             ("Stop", self.stop),
             ("Monitor", self.monitor),
+            ("Delete", self.delete),
             ("Sign in", self.login),
             ("Sign out", self.logout),
         ]
@@ -329,11 +353,36 @@ class App:
 
         self.root.config(menu=bar)
 
+    # -- keep-alive toggle -----------------------------------------------------
+    def _toggle_keepalive(self) -> None:
+        from . import daemonctl
+
+        try:
+            if self.keepalive_var.get():
+                pid = daemonctl.start()
+                self.say(f"Keep-alive on: supervising every session in the background (pid {pid}).")
+            else:
+                daemonctl.stop()
+                self.say("Keep-alive off. Runtimes can idle out without it.")
+        except Exception as exc:  # noqa: BLE001 -- a failed toggle must not kill the window
+            self.say(f"Keep-alive toggle failed: {exc}")
+        self._sync_keepalive()
+
+    def _sync_keepalive(self) -> None:
+        """Make the switch show the truth: the process, not the last click."""
+        from . import daemonctl
+
+        try:
+            self.keepalive_var.set(daemonctl.is_running())
+        except Exception:  # noqa: BLE001
+            pass
+
     # -- session list --------------------------------------------------------
     def _poll_sessions(self) -> None:
         if self._closing:
             return
         self.refresh()
+        self._sync_keepalive()
         self.root.after(SESSION_POLL_MS, self._poll_sessions)
 
     def refresh(self) -> None:
@@ -344,12 +393,16 @@ class App:
         existing = set(self.tree.get_children())
         for gone in existing - set(names):
             self.tree.delete(gone)
+        self._dead &= set(names)
         for s in rows:
-            values = (s.runtime, _time_left(s))
+            dead = s.name in self._dead
+            values = (s.runtime, "expired" if dead else _time_left(s))
+            tags = ("dead",) if dead else ()
             if s.name in existing:
-                self.tree.item(s.name, values=values)
+                self.tree.item(s.name, values=values, tags=tags)
             else:
-                self.tree.insert("", "end", iid=s.name, text=s.name, values=values)
+                self.tree.insert("", "end", iid=s.name, text=s.name,
+                                 values=values, tags=tags)
 
         # Keep a selection alive: the graphs and every session action key off it,
         # and an empty selection after a refresh would silently disarm them.
@@ -380,6 +433,11 @@ class App:
         state = "normal" if self.selected is not None else "disabled"
         for label in ("Shell", "Stop", "Monitor"):
             self.buttons[label].configure(state=state)
+        # Delete is the dead-session action: it removes an expired entry
+        # without the "anything running on it ends" ceremony, because nothing
+        # is running on it.
+        self.buttons["Delete"].configure(
+            state="normal" if self.selected in self._dead else "disabled")
 
     def _on_select(self, _event=None) -> None:
         sel = self.tree.selection()
@@ -439,7 +497,35 @@ class App:
                 break
             if event == "command_finished":
                 self._command_finished()
+            elif isinstance(event, tuple) and event[0] == "states":
+                self._apply_states(event[1])
         self.root.after(250, self._pump_samples)
+
+    def _check_states_loop(self) -> None:
+        """Worker thread: probe every session's runtime, post the verdicts."""
+        import time as _time
+
+        while not self._closing:
+            try:
+                from .cli import _session_states
+
+                rows = _sessions()
+                states = _session_states(rows) if rows else {}
+                self._events.put(("states", states))
+            except Exception:  # noqa: BLE001 -- a failed probe round is just skipped
+                pass
+            _time.sleep(20)
+
+    def _apply_states(self, states: dict) -> None:
+        """UI thread: paint the verdicts the checker posted."""
+        dead = {name for name, reason in states.items() if reason is not None}
+        if dead == self._dead:
+            return
+        self._dead = dead
+        self.refresh()
+        if self.selected in dead:
+            self.graph_note.set(f"{self.selected}: expired - the runtime is gone. "
+                                "Use Delete to remove it.")
 
     def _paint_sample(self, stats: Optional[dict], reason: str) -> None:
         if self._closing:
@@ -601,6 +687,19 @@ class App:
         if self.attached_kind == "shell":
             self.detach()          # never leave a shell attached to a dead VM
         self.run_cli(["stop", name], f"stop {name}")
+
+    def delete(self) -> None:
+        """Remove an expired session's stale entry. `stop` under the hood."""
+        name = self._need()
+        if not name:
+            return
+        if name not in self._dead:
+            self.say("Delete is for expired sessions; use Stop for a live one.")
+            return
+        if self.attached_kind == "shell":
+            self.detach()
+        self.run_cli(["stop", name], f"delete {name}")
+        self.say(f"Removing the expired session '{name}'.")
 
     # -- misc ----------------------------------------------------------------
     def say(self, message: str) -> None:

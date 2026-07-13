@@ -140,14 +140,35 @@ def _create_start_menu_shortcut(exe: str, icon: Optional[str]) -> bool:
 def _uninstall_command(exe: str) -> str:
     """A command Windows can run to actually remove colabapi.
 
-    We report the tool that installed us rather than a generic guess: a pipx
-    install lives in its own venv under pipx's home, so `pip uninstall` would
-    silently do nothing and leave the user with an entry in Add/Remove Programs
-    that does not work. Detect pipx by the venv layout it creates.
+    Two hard-won rules live here, both learned from a real machine that this
+    function left in a corrupted state:
+
+    * **Detect pipx from ``sys.executable``, never from ``exe``.** ``exe`` is
+      the shim Windows launches (``~\\.local\\bin\\colabapi.exe``) and its path
+      never contains "pipx"; the pipx-ness is in the interpreter's path, which
+      lives inside ``pipx\\venvs\\colabapi``. Checking ``exe`` sent every pipx
+      install -- the recommended install -- down the ``pip uninstall`` branch,
+      which gutted the venv while leaving pipx's metadata and shim behind, so
+      ``pipx list`` errored and even ``pipx uninstall`` could no longer clean up.
+
+    * **Unregister first, while the exe still exists, then remove the package.**
+      Neither ``pipx uninstall`` nor ``pip uninstall`` touches the registry, so
+      without the leading ``unregister`` the Settings entry and the App Paths
+      key survive their own uninstall -- a dead "colabapi" row in Installed apps
+      pointing at nothing. ``&&`` (cmd's conditional chain; this string is run
+      by cmd, not PowerShell) also means a failed unregister leaves the package
+      installed and the entry functional, so the user can simply retry, instead
+      of removing the package and stranding the entry.
+
+    ``cmd /s /c`` with the whole command in one outer quote pair is the one
+    quoting form cmd.exe treats predictably when the inner paths contain both
+    spaces and their own quotes.
     """
-    if "pipx" in exe.replace("/", "\\").lower():
-        return 'cmd /c pipx uninstall colabapi'
-    return f'cmd /c "{sys.executable}" -m pip uninstall -y colabapi'
+    if "pipx" in (sys.executable or "").replace("/", "\\").lower():
+        inner = f'"{exe}" unregister && pipx uninstall colabapi'
+    else:
+        inner = f'"{exe}" unregister && "{sys.executable}" -m pip uninstall -y colabapi'
+    return f'cmd /s /c "{inner}"'
 
 
 def register() -> str:
