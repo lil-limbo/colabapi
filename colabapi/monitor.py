@@ -105,6 +105,71 @@ def _parse_gpu(out: str) -> list[dict]:
     return gpus
 
 
+# The same reading, but as a program that keeps running and reports on its own
+# clock. This is what the window's graphs consume (via ColabCLI.exec_stream): one
+# connection, a line every second, rather than a fresh ~4s round trip per sample.
+#
+# psutil.cpu_percent(interval=1) is what paces the loop, and it is also the only
+# correct way to read CPU: the figure is the busy fraction *between two calls*, so
+# a snapshot with no interval is either meaningless or a lie. Sleeping separately
+# would report the load of a process that was asleep.
+STREAM_SNIPPET = r'''
+import subprocess, sys, time
+try:
+    import psutil
+except Exception:
+    psutil = None
+
+def mem_fallback():
+    d = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            p = line.split()
+            d[p[0].rstrip(":")] = int(p[1])
+    total = d["MemTotal"] // 1024
+    avail = d.get("MemAvailable", d.get("MemFree", 0)) // 1024
+    return total - avail, total
+
+while True:
+    try:
+        if psutil is not None:
+            cpu = psutil.cpu_percent(interval=1.0)
+            m = psutil.virtual_memory()
+            used, total = m.used // 1048576, m.total // 1048576
+        else:
+            time.sleep(1.0)
+            cpu = 0.0
+            used, total = mem_fallback()
+        print("CPU %.1f" % cpu)
+        print("MEM %d %d" % (used, total))
+        try:
+            out = subprocess.run(
+                ["nvidia-smi",
+                 "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5).stdout
+            for line in out.strip().splitlines():
+                if line.strip():
+                    print("GPU " + line)
+        except Exception:
+            pass
+        print("END")
+        sys.stdout.flush()
+    except Exception as exc:
+        print("ERR %s" % exc)
+        sys.stdout.flush()
+        time.sleep(1.0)
+'''
+
+
+def parse_block(lines: list) -> dict:
+    """Turn one CPU/MEM/GPU block from the stream into a reading."""
+    out = "\n".join(lines)
+    cpu, mem_used, mem_total = _parse_cpu_mem(out)
+    return {"cpu": cpu, "mem_used": mem_used, "mem_total": mem_total,
+            "gpus": _parse_gpu(out)}
+
+
 def read_stats(run_remote: RunRemote) -> dict:
     """One reading of the runtime: CPU %, RAM, and every GPU.
 

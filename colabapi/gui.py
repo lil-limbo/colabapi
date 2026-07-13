@@ -112,17 +112,18 @@ def _time_left(session) -> str:
     return f"~{timing.human_duration(rem)} left"
 
 
-def _run_remote(session: str, code: str) -> str:
-    """Run Python inside a runtime. The graph sampler's transport."""
+def _open_stats_stream(session: str):
+    """Start the live vitals feed inside a runtime. The graphs' transport.
+
+    One connection for the life of the selection, not one per reading: connecting
+    costs seconds, so a per-sample `colab exec` could never be live.
+    """
+    from . import monitor
     from .colabcli import ColabCLI
 
     colab = ColabCLI()
     colab.session = session
-    res = colab.exec_code(code)
-    if not res.ok and not res.stdout.strip():
-        first = res.text.strip().splitlines()
-        raise RuntimeError(first[0] if first else f"colab exec exited {res.returncode}")
-    return res.stdout if res.stdout.strip() else res.stderr
+    return colab.exec_stream(monitor.STREAM_SNIPPET)
 
 
 # --------------------------------------------------------------------------- #
@@ -155,8 +156,7 @@ class App:
 
         self._build()
 
-        self.sampler = gauges.Sampler(_run_remote, self._on_sample,
-                                      interval=self._interval())
+        self.sampler = gauges.Sampler(_open_stats_stream, self._on_sample)
         self.sampler.start()
 
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
@@ -408,13 +408,6 @@ class App:
         return None
 
     # -- graphs --------------------------------------------------------------
-    def _interval(self) -> float:
-        # The window's graphs are a live monitor: one reading a second, always.
-        # `monitor_interval` in the config governs the CLI's `colabapi monitor`,
-        # where a slower default is fine because it repaints a static panel --
-        # here it would make the graphs stutter.
-        return 1.0
-
     def _on_sample(self, stats: Optional[dict], reason: str) -> None:
         """Called on the sampler thread -- so it must not touch Tk at all.
 

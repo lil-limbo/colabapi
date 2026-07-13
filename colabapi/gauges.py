@@ -47,25 +47,33 @@ DEAD = "#c9c9c9"
 
 
 class Sampler:
-    """Polls one session's vitals on a background thread."""
+    """A live feed of one session's vitals.
 
-    def __init__(self, run_remote: Callable[[str, str], str],
+    Not a poller. Polling meant a fresh `colab exec` per reading, and connecting
+    costs ~4s against a real runtime -- so "every second" was never achievable
+    that way, however short the interval. Instead one long-lived exec runs
+    `monitor.STREAM_SNIPPET` on the VM and prints a block every second; this
+    reads those blocks as they arrive. The runtime's own clock sets the cadence,
+    so the graphs move once a second because the machine says so.
+
+    The stream is re-established if it dies (the runtime went away, the network
+    blinked), with a pause so a genuinely dead session is not hammered.
+    """
+
+    def __init__(self, open_stream: Callable[[str], object],
                  on_sample: Callable[[Optional[dict], str], None],
-                 interval: float = 1.0):
-        # run_remote(session_name, code) -> stdout. Injected rather than built
-        # here so the GUI can hand in the same ColabCLI the buttons drive.
-        self._run_remote = run_remote
+                 retry: float = 5.0):
+        # open_stream(session) -> a Popen whose stdout yields the blocks.
+        # Injected rather than built here so the GUI supplies the ColabCLI its
+        # buttons already drive, and tests can supply a fake.
+        self._open_stream = open_stream
         self._on_sample = on_sample
-        # One reading a second. A reading costs a round trip to the runtime, and
-        # if that trip takes longer than a second the next tick is skipped rather
-        # than queued (see `_busy` below) -- so the monitor runs as fast as the
-        # link allows and never builds a backlog of stale probes.
-        self.interval = max(interval, 1.0)
+        self.retry = retry
         self._session: Optional[str] = None
+        self._proc = None
         self._lock = threading.Lock()
-        self._wake = threading.Event()
         self._stop = threading.Event()
-        self._busy = False
+        self._changed = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -75,16 +83,26 @@ class Sampler:
             self._thread.start()
 
     def watch(self, session: Optional[str]) -> None:
-        """Point the sampler at a session (or None to idle). Takes effect now."""
+        """Point the feed at a session (or None to idle). Takes effect now."""
         with self._lock:
             if session == self._session:
                 return
             self._session = session
-        self._wake.set()          # don't make the user wait out the current sleep
+        self._changed.set()
+        self._kill()          # drop the old stream; the loop opens the new one
 
     def stop(self) -> None:
         self._stop.set()
-        self._wake.set()
+        self._changed.set()
+        self._kill()
+
+    def _kill(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -92,17 +110,52 @@ class Sampler:
                 session = self._session
             if session is None:
                 self._on_sample(None, "")
-            elif not self._busy:
-                self._busy = True
-                try:
-                    stats = monitor.read_stats(lambda code: self._run_remote(session, code))
-                    self._on_sample(stats, "")
-                except Exception as exc:  # noqa: BLE001 -- a dead runtime is news, not a crash
-                    self._on_sample(None, _reason(exc))
-                finally:
-                    self._busy = False
-            self._wake.wait(self.interval)
-            self._wake.clear()
+                self._changed.wait(0.5)
+                self._changed.clear()
+                continue
+            try:
+                self._stream(session)
+            except Exception as exc:  # noqa: BLE001 -- a dead runtime is news, not a crash
+                self._on_sample(None, _reason(exc))
+            if self._stop.is_set():
+                return
+            # The stream ended. If the user just switched sessions that is
+            # expected and we go straight round; otherwise wait, so a runtime
+            # that is really gone is not reconnected to on a tight loop.
+            if not self._changed.is_set():
+                self._changed.wait(self.retry)
+            self._changed.clear()
+
+    def _stream(self, session: str) -> None:
+        proc = self._open_stream(session)
+        self._proc = proc
+        block: list = []
+        errors: list = []
+        try:
+            for line in proc.stdout:            # blocks until the VM speaks
+                if self._stop.is_set() or self._session != session:
+                    return
+                line = line.rstrip("\n")
+                if line == "END":
+                    self._on_sample(monitor.parse_block(block), "")
+                    block = []
+                    errors = []
+                elif line.startswith(("CPU ", "MEM ", "GPU ")):
+                    block.append(line)
+                elif line.strip():
+                    # Anything else is the CLI or the runtime complaining. Keep
+                    # the last few lines: if the stream then dies, this is the
+                    # only explanation the user will ever get.
+                    errors.append(line.strip())
+                    del errors[:-3]
+        finally:
+            self._kill()
+        if self._stop.is_set() or self._session != session:
+            return
+        code = proc.poll()
+        why = " · ".join(errors) if errors else (
+            f"the stats feed ended (exit {code})" if code else "the stats feed ended")
+        self._on_sample(None, why[:120])
 
 
 def _reason(exc: Exception) -> str:

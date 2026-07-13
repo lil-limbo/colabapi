@@ -258,6 +258,36 @@ class ColabCLI:
         """
         return self._run(["exec", *self._session_args()], timeout=timeout, input=code)
 
+    def exec_stream(self, code: str) -> subprocess.Popen:
+        """Run long-lived Python on the runtime and stream its stdout back.
+
+        `exec_code` above is one shot: it pays the connection cost (measured at
+        ~4s against a live T4) and then throws the connection away. Calling it in
+        a loop can therefore never sample faster than that, no matter what
+        interval is asked for -- which is why the window's graphs stream instead.
+        A program that prints on its own clock delivers each line as it is
+        produced (verified: ticks arrive 1.0s apart after the initial connect),
+        so one connection gives a genuinely live feed.
+
+        Returns the running process. The caller reads `.stdout` line by line and
+        must terminate it when done.
+        """
+        proc = subprocess.Popen(
+            self._command(["exec", *self._session_args()]),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # errors belong in the same stream
+            text=True,
+            bufsize=1,                  # line buffered: a line out is a line in
+            env=self._child_env(),
+        )
+        # The code is the program, delivered on stdin and then EOF'd -- `colab
+        # exec` reads until EOF before it runs anything.
+        if proc.stdin is not None:
+            proc.stdin.write(code)
+            proc.stdin.close()
+        return proc
+
     def raw(self, args: Sequence[str]) -> int:
         """Passthrough escape hatch: `colabapi raw -- <args>` -> `colab <args>`."""
         return self._exec_tty(list(args))
