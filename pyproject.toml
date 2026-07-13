@@ -49,6 +49,10 @@ dependencies = [
   # transitive dependency of google-colab-cli, but relying on a transitive dep
   # for a direct import is how installs break the day upstream drops it.
   "websocket-client>=1.8",
+  # The VT emulator behind the window's embedded terminal (colabapi/termview.py).
+  # The runtime's shell sends raw ANSI and tmux repaints whole regions, so the
+  # window needs a real terminal, not a text box. Pure Python, no build step.
+  "pyte>=0.8",
   # Google's official Colab CLI. Pulled in automatically so a single
   # `pipx install colabapi` installs the whole system, so the user never has to
   # install this separately. colabapi locates its `colab` binary inside its own

@@ -26,7 +26,7 @@ Google Colab is fantastic free (and paid) GPU/TPU compute, but it only lives ins
 
 ## Features
 
-* 🖥 **A desktop app, not just a CLI.** `colabapi ui` opens a clean graphical window (white, minimal, works on Linux and Windows) with one click access to Login, Run, Shell, Monitor, Sessions, Status, Doctor, and Logout. On Windows it opens straight from the Start menu and the app list.
+* 🖥 **A desktop app, not just a CLI.** `colabapi ui` opens a clean graphical window (white, minimal, works on Linux and Windows) with live CPU / RAM / GPU / VRAM graphs, a session list, and a **real terminal built into the window** — the shell, sign-in, runtime allocation and everything else run *inside it*, not in a terminal it throws you out to. On Windows it opens straight from the Start menu and the app list.
 * 🪟 **Works on Windows** (PowerShell + CMD), which Google's own CLI does not. Registers as real installed software with its own logo.
 * 🔌 **Reconnects instead of dying.** WebSocket keepalive pings, exponential backoff, and your work keeps running on the VM across the drop.
 * 🔐 **Browser sign in, no password handling.** Authentication happens in Google's own login flow (including 2FA / device checks). `colabapi` never asks for, stores, or transmits your Google credentials. `colabapi logout` signs you out again in one command.
@@ -189,16 +189,24 @@ Press **Ctrl+C** to leave the monitor; type **`exit`** or press **Ctrl+D** to le
 colabapi ui
 ```
 
-A minimal white window with the same actions as the CLI: sign in, allocate a runtime, open the shell or the live monitor (each in its own terminal window), and check sessions, status, or doctor output right inside the window. The header shows whether you are signed in and how many sessions are active.
+**Everything happens in the window. Nothing opens a second terminal.**
 
-* **Windows:** after `colabapi register`, "colabapi" in the Start menu and the app list opens this window directly.
+* **Live graphs** across the top: CPU, RAM, GPU and VRAM, read from inside the selected runtime and plotted as they move.
+* **A real terminal** in the window — a full VT emulator, not a log box. `Shell` drops you into the selected runtime (auto-reconnecting, and your work keeps running in tmux across a drop). `New runtime`, `Sign in`, `Monitor` and the rest run *in that same terminal*, on a pty, so their prompts prompt and you answer them right there.
+* **Select a session, then act on it.** The list on the left is the selection `Shell`, `Stop` and `Monitor` operate on, and it is what the graphs follow. With nothing selected, those buttons are disabled rather than guessing.
+* **Stop** releases the runtime, with a confirmation first.
+* **Keyboard throughout:** Ctrl+N new runtime, Ctrl+S shell, Ctrl+K stop, Ctrl+M monitor, Ctrl+L sign in, F5 refresh. Enter on a session opens its shell. Every action is also a real, focusable button, and the menu bar carries the rest (REPL, status, runtimes, doctor, keep-alive service).
+
+Sign-in is Google's own browser flow, exactly as on the command line — colabapi never sees your password.
+
+* **Windows:** after `colabapi register`, "colabapi" in the Start menu and the app list opens this window directly. Windows has no pty, so there the interactive commands still open a console window; the shell, the graphs and everything else run in the window as normal.
 * **Linux:** the window uses Tkinter, which some distros package separately. If `colabapi ui` says Tkinter is missing, install it with `sudo apt install python3-tk` (Debian / Ubuntu / Kali) or `sudo dnf install python3-tkinter` (Fedora).
 
 ## Command reference
 
 | Command | What it does |
 |---|---|
-| `colabapi ui` | Open the colabapi desktop window (all of the below, with buttons). |
+| `colabapi ui` | Open the colabapi window: live graphs, session list, and a built-in terminal that runs all of the below. |
 | `colabapi login` | Sign in via Google's browser flow (no password handled). |
 | `colabapi logout` | Sign out of Google and forget all sessions, for a clean start. |
 | `colabapi runtimes` | List runtime types and which need a paid plan. |

@@ -105,10 +105,24 @@ def _parse_gpu(out: str) -> list[dict]:
     return gpus
 
 
-def build_panel(run_remote: RunRemote, session_line: str = "") -> Panel:
+def read_stats(run_remote: RunRemote) -> dict:
+    """One reading of the runtime: CPU %, RAM, and every GPU.
+
+    The single place the runtime's vitals are read. Both front ends use it -- the
+    CLI monitor below, and the window's live graphs -- so they can never disagree
+    about what the numbers mean.
+    """
     out = run_remote(_STATS_SNIPPET)
     cpu, mem_used, mem_total = _parse_cpu_mem(out)
-    gpus = _parse_gpu(out)
+    return {"cpu": cpu, "mem_used": mem_used, "mem_total": mem_total,
+            "gpus": _parse_gpu(out)}
+
+
+def build_panel(run_remote: RunRemote, session_line: str = "") -> Panel:
+    stats = read_stats(run_remote)
+    cpu = stats["cpu"]
+    mem_used, mem_total = stats["mem_used"], stats["mem_total"]
+    gpus = stats["gpus"]
 
     rows = [
         _bar(cpu, 100, "CPU", f"{cpu:.0f}%"),

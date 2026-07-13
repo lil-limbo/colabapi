@@ -231,6 +231,17 @@ def ui_cmd() -> None:
 
 def _tk_missing_help(detail: str = "") -> None:
     """Explain how to get Tkinter, the one piece pip cannot install."""
+    if "pyte" in detail:
+        # A different missing piece entirely, and pip *can* install this one.
+        # Printing the python3-tk advice here would send the user to fix
+        # something that is not broken.
+        console.print(Panel.fit(
+            "The window's embedded terminal needs [bold]pyte[/], which is missing.\n"
+            "It normally installs with colabapi:\n\n"
+            "  [bold]pip install pyte[/]\n\n"
+            "or reinstall colabapi itself:  [bold]pipx install --force colabapi[/]",
+            title="colabapi ui", border_style="yellow"))
+        return
     if "display" in detail:
         # Tkinter is fine; there is just no screen (headless box, plain ssh).
         console.print(Panel.fit(

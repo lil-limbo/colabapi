@@ -67,7 +67,7 @@ import threading
 import time
 from dataclasses import dataclass
 from queue import Empty, Queue
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 from .platform import IS_WINDOWS
@@ -272,12 +272,32 @@ def _size() -> tuple[int, int]:
 
 
 class HardenedConsole:
-    """An auto-reconnecting terminal session on a Colab runtime."""
+    """An auto-reconnecting terminal session on a Colab runtime.
 
-    def __init__(self, name: str, quiet: bool = False, persist: bool = True):
+    Two front ends drive the same connection. `run()` is the CLI one: it owns the
+    real terminal, reads stdin in raw mode and writes the runtime's bytes to
+    stdout. `start()` is the embedded one used by the window (see `gui.py`),
+    where there is no local terminal at all -- output is handed to `sink`,
+    keystrokes arrive through `send()`, and the size comes from `size_fn` because
+    a Tk widget has no os.get_terminal_size(). Everything between those two ends
+    -- reconnect, pings, close-frame semantics, the tmux bootstrap, the single
+    outbox pump -- is shared, so the window cannot drift from the CLI.
+    """
+
+    def __init__(self, name: str, quiet: bool = False, persist: bool = True,
+                 sink: Optional[Callable[[str], None]] = None,
+                 note: Optional[Callable[[str], None]] = None,
+                 size_fn: Optional[Callable[[], tuple]] = None):
         self.name = name
         self.quiet = quiet
         self.persist = persist
+        # Embedded when someone else owns the screen: no stdin, no raw mode, no
+        # SIGWINCH. Deliberately keyed off `sink` rather than a flag, so the two
+        # cannot disagree.
+        self._sink = sink
+        self._note_cb = note
+        self._size_fn = size_fn or _size
+        self.embedded = sink is not None
         self._outbox: Queue = Queue()
         self._stop = threading.Event()      # tear the whole session down
         # `_connected` is replaced with a FRESH Event for every connection
@@ -301,6 +321,9 @@ class HardenedConsole:
         so a bare newline would leave the cursor mid-row and stair-step the
         output. Every line therefore ends \\r\\n.
         """
+        if self._note_cb is not None:
+            self._note_cb(message)
+            return
         if self.quiet:
             return
         sys.stdout.write(f"\r\n\x1b[36m[colabapi]\x1b[0m {message}\r\n")
@@ -437,7 +460,7 @@ class HardenedConsole:
     # concurrent sends -- two threads calling ws.send() can interleave their
     # frames and corrupt the stream. One queue, one sender, no interleaving.
     def _queue_size(self) -> None:
-        cols, rows = _size()
+        cols, rows = self._size_fn()
         self._outbox.put({"cols": cols, "rows": rows})
 
     def _bootstrap_persistence(self, connected: threading.Event) -> None:
@@ -535,6 +558,11 @@ class HardenedConsole:
             except ValueError:
                 return
             if "data" in data:
+                if self._sink is not None:
+                    # Embedded: the caller owns a VT emulator and wants the raw
+                    # escape sequences intact, exactly as a terminal would.
+                    self._sink(data["data"])
+                    return
                 # Raw ANSI from the remote pty: write bytes straight through so
                 # nothing reinterprets the escape sequences.
                 sys.stdout.buffer.write(data["data"].encode("utf-8"))
@@ -591,6 +619,11 @@ class HardenedConsole:
         """
         import signal
 
+        # Embedded: the window resizes, not a terminal. `resize()` is called
+        # directly by the widget, and signal.signal() would in any case refuse to
+        # run off the main thread.
+        if self.embedded:
+            return
         if not sys.stdin.isatty():
             return
         if IS_WINDOWS:
@@ -631,6 +664,41 @@ class HardenedConsole:
                 # keystroke the user types back in their own shell.
                 reader.join(timeout=1.0)
         return self._exit_code
+
+    # -- embedded driver (the window) ---------------------------------------
+    # The CLI's run() owns stdin and the terminal; a Tk widget owns neither, so
+    # the same session is driven from the outside instead: start it, push
+    # keystrokes in, push resizes in, close it. The reconnect loop underneath is
+    # the identical one.
+    def start(self) -> threading.Thread:
+        """Run the session on a background thread. Returns that thread."""
+        t = threading.Thread(target=self._loop, name=f"colabapi-console-{self.name}",
+                             daemon=True)
+        t.start()
+        return t
+
+    def send(self, text: str) -> None:
+        """Send keystrokes to the runtime. Queued, so typing while disconnected
+        survives the reconnect rather than being dropped."""
+        if text and not self._stop.is_set():
+            self._outbox.put({"data": text})
+
+    def resize(self, cols: int, rows: int) -> None:
+        if cols > 0 and rows > 0 and not self._stop.is_set():
+            self._outbox.put({"cols": cols, "rows": rows})
+
+    def close(self) -> None:
+        """End the session. The runtime keeps running; only we hang up."""
+        self._stop.set()
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    @property
+    def finished(self) -> bool:
+        return self._stop.is_set() or self._user_quit
 
     def _loop(self) -> None:
         backoff = BACKOFF_START
