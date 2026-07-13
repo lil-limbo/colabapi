@@ -35,22 +35,33 @@ _REDRAW_MS = 25
 DEFAULT_COLS = 80
 DEFAULT_ROWS = 24
 
-# A dark terminal inside a light window: this pane is a terminal, and reading
-# ANSI colour on white is miserable -- most programs assume a dark background.
-BG = "#12141a"
-FG = "#e6e6e6"
-CURSOR = "#57d9a3"
+# A light terminal, to match the rest of the window.
+BG = "#ffffff"
+FG = "#1f2328"
+CURSOR = "#1a73e8"
+BORDER = "#e0e0e0"
 
 # pyte reports colours by name (its 8/16-colour table) or as a bare 6-digit hex
-# string for 256/true-colour. Names map here; hex is passed through.
+# string for 256/true-colour.
+#
+# The names cannot be taken literally on a white background. ANSI "white" means
+# "the light end of the palette", which on white is invisible, and the default
+# bright colours are washed out to the point of being unreadable. So the table
+# maps each name to a colour of the same *hue* darkened enough to read on white,
+# and "white"/"brightwhite" become greys rather than disappearing.
 _COLOURS = {
-    "black": "#2b2f38", "red": "#e35d6a", "green": "#57d9a3", "brown": "#d8b46a",
-    "yellow": "#d8b46a", "blue": "#6aa9f7", "magenta": "#c98bdb", "cyan": "#5bc6d0",
-    "white": "#e6e6e6",
-    "brightblack": "#5c6370", "brightred": "#ff7b86", "brightgreen": "#7de6b8",
-    "brightbrown": "#f0cd8a", "brightyellow": "#f0cd8a", "brightblue": "#8fc1ff",
-    "brightmagenta": "#dda6ec", "brightcyan": "#7fdce5", "brightwhite": "#ffffff",
+    "black": "#24292f", "red": "#cf222e", "green": "#116329", "brown": "#9a6700",
+    "yellow": "#9a6700", "blue": "#0550ae", "magenta": "#8250df", "cyan": "#1b7c83",
+    "white": "#6e7781",
+    "brightblack": "#57606a", "brightred": "#a40e26", "brightgreen": "#1a7f37",
+    "brightbrown": "#7d4e00", "brightyellow": "#7d4e00", "brightblue": "#0969da",
+    "brightmagenta": "#6639ba", "brightcyan": "#3192aa", "brightwhite": "#24292f",
 }
+
+# A 256/true-colour value chosen for a dark terminal can be too pale to read
+# here. Rather than pass it through and hope, anything this light is darkened
+# until it clears the threshold, so no program can render itself invisible.
+_MIN_CONTRAST = 0.62      # relative luminance ceiling for text on white
 
 
 def _colour(name: str, default: str) -> str:
@@ -60,10 +71,14 @@ def _colour(name: str, default: str) -> str:
         return _COLOURS[name]
     if len(name) == 6:
         try:
-            int(name, 16)
-            return "#" + name
+            r, g, b = (int(name[i:i + 2], 16) for i in (0, 2, 4))
         except ValueError:
-            pass
+            return default
+        lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        if lum > _MIN_CONTRAST:
+            scale = _MIN_CONTRAST / lum
+            r, g, b = (int(c * scale) for c in (r, g, b))
+        return f"#{r:02x}{g:02x}{b:02x}"
     return default
 
 
@@ -87,9 +102,12 @@ class TerminalView(tk.Frame):
         self.screen = pyte.Screen(DEFAULT_COLS, DEFAULT_ROWS)
         self.stream = pyte.Stream(self.screen)
 
+        # A white pane on a white window needs an edge, or the terminal has no
+        # visible boundary at all.
         self.text = tk.Text(
             self, bg=BG, fg=FG, font=self.font, relief="flat", borderwidth=0,
-            highlightthickness=0, padx=8, pady=6, wrap="none",
+            highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER,
+            padx=8, pady=6, wrap="none",
             insertbackground=BG,          # no Tk caret; the VT cursor is drawn
             state="disabled", cursor="xterm", takefocus=True,
         )

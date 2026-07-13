@@ -409,11 +409,11 @@ class App:
 
     # -- graphs --------------------------------------------------------------
     def _interval(self) -> float:
-        try:
-            from .config import Config
-            return float(Config.load().monitor_interval)
-        except Exception:  # noqa: BLE001
-            return 3.0
+        # The window's graphs are a live monitor: one reading a second, always.
+        # `monitor_interval` in the config governs the CLI's `colabapi monitor`,
+        # where a slower default is fine because it repaints a static panel --
+        # here it would make the graphs stutter.
+        return 1.0
 
     def _on_sample(self, stats: Optional[dict], reason: str) -> None:
         """Called on the sampler thread -- so it must not touch Tk at all.

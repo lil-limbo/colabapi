@@ -27,9 +27,9 @@ from typing import Callable, Optional
 
 from . import monitor
 
-# Room for five minutes of history at the default cadence: enough to see a
-# training run spin up, without holding data nobody looks at.
-HISTORY = 100
+# At one reading a second, this is the last three minutes -- enough to watch a
+# training step spike and settle, without holding data nobody looks at.
+HISTORY = 180
 
 # The palette is shared with the rest of the window (gui.py) but redeclared as
 # graph roles, so a colour change here cannot silently restyle a button.
@@ -51,12 +51,16 @@ class Sampler:
 
     def __init__(self, run_remote: Callable[[str, str], str],
                  on_sample: Callable[[Optional[dict], str], None],
-                 interval: float = 3.0):
+                 interval: float = 1.0):
         # run_remote(session_name, code) -> stdout. Injected rather than built
         # here so the GUI can hand in the same ColabCLI the buttons drive.
         self._run_remote = run_remote
         self._on_sample = on_sample
-        self.interval = max(interval, 1.5)
+        # One reading a second. A reading costs a round trip to the runtime, and
+        # if that trip takes longer than a second the next tick is skipped rather
+        # than queued (see `_busy` below) -- so the monitor runs as fast as the
+        # link allows and never builds a backlog of stale probes.
+        self.interval = max(interval, 1.0)
         self._session: Optional[str] = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
