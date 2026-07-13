@@ -230,28 +230,6 @@ It appears in Task Scheduler as **colabapi**, and `colabapi service uninstall` r
 - The only things written to disk are **plain preferences and session bookkeeping** (which runtime you picked and when), under `~/.config/colabapi` and `~/.local/state/colabapi`.
 - The project is **MIT licensed and fully open source.** [Read the code](https://github.com/lil-limbo/colabapi/tree/main/colabapi). If you don't trust a claim here, verify it in the source. That's the point.
 
-<a name="staying-alive-what-actually-kills-a-colab-session"></a>
-## Staying alive: what actually kills a Colab session
-
-"Colab killed my session for no reason" is usually several different failures wearing the same coat. They have different causes and different fixes, and lumping them together is why they never get fixed. Here is the honest breakdown.
-
-**Two of them are our bugs to fix, and v0.2.0 fixes them:**
-
-| What goes wrong | Why | What colabapi does |
-|---|---|---|
-| **The connection silently dies** and the terminal just hangs | Google's client calls `run_forever()` with **no WebSocket keepalive ping**. A connection carrying no traffic gets quietly reaped by NAT tables, proxies and load balancers — neither end is told. The socket is now "half-open": you think you're connected, you're not. | We ping every 20s and expect a pong within 10s, so a dead connection is **detected in seconds instead of hanging forever**. |
-| **One blip ends the session for good** | Google's client has **no reconnect logic at all**. Wi-Fi handover, VPN reconnect, closing your laptop lid — the socket closes, you get `Connection closed.`, and that's it. | We **reconnect automatically** with exponential backoff and jitter, re-reading your token each attempt. |
-| **Your running job dies with the connection** | If a training run is in the foreground of the remote shell, losing the shell can take the job with it. | Your shell runs inside a **tmux session on the VM that we name and own**, so the job keeps running and reconnecting **puts you back in front of it**. |
-| **The keepalive quietly stops** | Google's keepalive daemon is a child of *your terminal*, and it deliberately exits after 24h. Laptop sleeps → daemon dies → runtime idles out. | We **supervise it and restart it**, and `colabapi service install` keeps that running across logout and reboot. |
-
-**And these are hard caps that nobody can bypass colabapi doesn't pretend to:**
-
-- **Absolute max lifetime (~12 h free, up to 24 h paid).** Enforced server-side. We show an *estimate* of time left and stop cleanly when it's reached, rather than hammering a dead endpoint.
-- **GPU quota / "cannot currently connect to a GPU backend".** Google deliberately doesn't publish the numbers, and they vary. Waiting or upgrading are the only levers.
-- **Out-of-memory or a full disk inside the VM.** That's a workload problem, not a connectivity problem, and we report it as one instead of calling it a disconnect.
-
-The distinction that matters: **your connection dying is not your runtime dying.** Most "session died" reports are the former, which is recoverable  so colabapi recovers from it, and only tells you the session has genuinely ended when Colab actually says so (a 401/404 from the runtime), instead of guessing.
-
 ## Safety (please read)
 
 `colabapi` deliberately uses **Google's official CLI** instead of the older "SSH into Colab via ngrok/cloudflared" trick, because Colab's own FAQ lists *remote control such as SSH shells* as an activity that can get a runtime or an account terminated. Using the sanctioned path is far safer for your Google account.
