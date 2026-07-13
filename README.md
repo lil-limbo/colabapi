@@ -234,7 +234,7 @@ It appears in Task Scheduler as **colabapi**, and `colabapi service uninstall` r
 
 `colabapi` deliberately uses **Google's official CLI** instead of the older "SSH into Colab via ngrok/cloudflared" trick, because Colab's own FAQ lists *remote control such as SSH shells* as an activity that can get a runtime or an account terminated. Using the sanctioned path is far safer for your Google account.
 
-**The keepalive is Google's own.** colabapi doesn't invent a scheme to defeat the idle timeout: it runs the keepalive daemon that ships inside Google's CLI, which pings Colab's own tunnel endpoint once a minute. Our reconnect pings are ordinary WebSocket keepalives on our own socket — standard practice for any long-lived connection, and *not* synthetic activity designed to look like a user who isn't there.
+**The keepalive is Google's own.** colabapi doesn't invent a scheme to defeat the idle timeout: it runs the keepalive daemon that ships inside Google's CLI, which pings Colab's own tunnel endpoint once a minute. Our reconnect pings are ordinary WebSocket keepalives on our own socket standard practice for any long-lived connection, and *not* synthetic activity designed to look like a user who isn't there.
 
 Be a good citizen: **don't hold GPU runtimes idle just to reserve them.** Colab's abuse heuristics are real and they do flag paying users. Nothing in colabapi tries to hide what you're doing, and you shouldn't either.
 
@@ -259,7 +259,7 @@ Yes. CPU and T4 GPU runtimes are available on the free tier. Paid runtimes (L4, 
 Yes — that's one of the two reasons this project exists. Google's CLI imports `termios`, a POSIX-only module, at startup, so on Windows it dies before running any command at all. colabapi supplies the missing pieces through the Win32 console API, so Google's CLI runs unmodified in PowerShell and CMD. We don't patch their code, so their updates keep working. See [Windows](#windows).
 
 **My session keeps dying. Is that Colab or colabapi?**
-Usually neither — it's the *connection*, not the runtime, and it's the thing v0.2.0 was built to fix. See [Staying alive](#staying-alive-what-actually-kills-a-colab-session) for what each failure actually is and which ones are hard caps nobody can bypass.
+Usually neither it's the *connection*, not the runtime, and it's the thing v0.2.0 was built to fix. See [Staying alive](#staying-alive-what-actually-kills-a-colab-session) for what each failure actually is and which ones are hard caps nobody can bypass.
 
 **What happens to my running job if my Wi-Fi drops?**
 It keeps running. Your shell lives inside a tmux session on the Colab VM, so the job is not attached to your connection; colabapi reconnects and puts you back in front of it. You can also detach on purpose with **Ctrl+]**.
